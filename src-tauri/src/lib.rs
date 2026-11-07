@@ -22,6 +22,7 @@ pub mod install;
 pub mod library;
 pub mod looks;
 pub mod manage;
+pub mod macos;
 pub mod media;
 pub mod mods;
 pub mod net;
