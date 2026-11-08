@@ -714,6 +714,27 @@ fn unpack_with(file: &Path, target: &Path, staging: &Path, strip_top: bool) -> R
             validate_links(&entry.path(), &entry.path())?;
         }
     }
+    #[cfg(target_os = "macos")]
+    if strip_top && crate::macos::is_bundle(target) {
+        // An imported application's library root can be the .app itself, rather than
+        // its enclosing game folder. Replace that unit, never nest the new app in it.
+        let mut bundles = Vec::new();
+        for entry in fs::read_dir(&from)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() && crate::macos::is_bundle(&entry.path()) {
+                bundles.push(entry.path());
+            }
+        }
+        if bundles.len() != 1 {
+            return Err(Error::Msg("This download must contain one Mac app to update the imported application.".into()));
+        }
+        let bundle = &bundles[0];
+        let mut files = vec![];
+        list(bundle, bundle, &mut files);
+        replace_bundle(bundle, target)?;
+        let _ = fs::remove_dir_all(staging);
+        return Ok(files);
+    }
     let mut files = vec![];
     list(&from, &from, &mut files);
     overlay(&from, target)?;
@@ -1457,6 +1478,30 @@ mod mac_archive_tests {
         assert!(!target.join("Game.app/Contents/Resources/obsolete").exists());
         assert_eq!(fs::read(target.join("save.sav")).unwrap(), b"player progress");
         assert!(fs::read_link(target.join("Game.app/Contents/Frameworks/Engine.framework/Versions/Current")).is_ok());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn mac_imported_app_updates_replace_the_library_root_without_nesting() {
+        let d = temp("imported-update");
+        let target = d.join("installed/Game.app");
+        fs::write(d.join("game.zip"), app_zip(&[("Game.app/Contents/Resources/obsolete", b"old", 0o644)])).unwrap();
+        unpack(&d.join("game.zip"), target.parent().unwrap(), &d.join("stage")).unwrap();
+        fs::write(target.parent().unwrap().join("save.sav"), b"player progress").unwrap();
+
+        fs::write(d.join("game.zip"), app_zip(&[])).unwrap();
+        let files = unpack(&d.join("game.zip"), &target, &d.join("stage")).unwrap();
+        assert_eq!(fs::read(target.join("Contents/MacOS/Game")).unwrap(), b"program");
+        assert!(!target.join("Game.app").exists());
+        assert!(!target.join("Contents/Resources/obsolete").exists());
+        assert_eq!(fs::read(target.parent().unwrap().join("save.sav")).unwrap(), b"player progress");
+        assert!(files.contains(&PathBuf::from("Contents/MacOS/Game")));
+        assert!(fs::read_link(target.join("Contents/Frameworks/Engine.framework/Versions/Current")).is_ok());
+
+        // A release with no replacement app must leave the existing bundle untouched.
+        fs::write(d.join("loose.zip"), archive(&[("OtherGame", b"program", 0o755)], &[])).unwrap();
+        assert!(unpack(&d.join("loose.zip"), &target, &d.join("stage")).is_err());
+        assert_eq!(fs::read(target.join("Contents/MacOS/Game")).unwrap(), b"program");
     }
 
     #[test]
