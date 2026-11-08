@@ -991,6 +991,12 @@ pub fn is_program(p: &Path, os: &str) -> bool {
 /// The program to start, relative to `dir`: the one whose name looks most like the game's, near the
 /// top of the folder, and big (the game is usually the biggest program in its folder).
 pub fn find_exe(dir: &Path, os: &str, names: &[&str]) -> Option<PathBuf> {
+    // An imported app can itself be the search root. Never score its helpers or
+    // search inside a bundle whose declared executable is missing or incompatible.
+    if os == "macos" && crate::macos::is_bundle(dir) {
+        return crate::macos::bundle_executable(dir, crate::assets::arch_now())
+            .and_then(|exe| exe.strip_prefix(dir).ok().map(Path::to_path_buf));
+    }
     let mut want: Vec<String> = names.iter().flat_map(|n| tokens(n)).filter(|t| t.len() > 2 && t != "recomp" && t != "the").collect();
     // Initials too: VCSLauncher.exe is Vice City Stories' launcher, mcla.exe Midnight Club Los
     // Angeles.
@@ -1545,8 +1551,27 @@ mod mac_discovery_tests {
     #[test]
     fn mac_detection_uses_bundle_metadata_instead_of_largest_helper() {
         let d = temp("metadata");
-        bundle(&d, "Engine");
+        let app = bundle(&d, "Engine");
         assert_eq!(find_game_exe(&d, "macos", &["My Game"]), Some(PathBuf::from("My Game.app/Contents/MacOS/Engine")));
+        assert_eq!(find_game_exe(&app, "macos", &["My Game"]), Some(PathBuf::from("Contents/MacOS/Engine")));
+    }
+
+    #[test]
+    fn mac_existing_game_import_keeps_bundles_whole_and_uses_their_names() {
+        let d = temp("import");
+        let app = bundle(&d, "Engine");
+        let names = ["My Game".to_string()];
+        let entry = serde_json::json!({"name": "My Game"});
+        let (root, exe, fits) = crate::adopt::check_folder(&app, &entry, &names, "macos");
+        assert_eq!(root, app);
+        assert_eq!(exe, Some(PathBuf::from("Contents/MacOS/Engine")));
+        assert!(fits, "the bundle name identifies a game with a generic executable name");
+        let (root, exe, fits) = crate::adopt::check_folder(&d, &entry, &names, "macos");
+        assert_eq!(root, d);
+        assert_eq!(exe, Some(PathBuf::from("My Game.app/Contents/MacOS/Engine")));
+        assert!(fits);
+        let (_, _, fits) = crate::adopt::check_folder(&app, &entry, &["Unrelated Title".to_string()], "macos");
+        assert!(!fits, "a bundle is not automatically the requested game");
     }
 
     #[test]
@@ -1575,8 +1600,9 @@ mod mac_discovery_tests {
     fn mac_detection_does_not_guess_inside_invalid_bundle() {
         for declared in ["Missing", "../Engine", "/Engine"] {
             let d = temp(&format!("invalid-{}", declared.replace('/', "_")));
-            bundle(&d, declared);
+            let app = bundle(&d, declared);
             assert!(find_game_exe(&d, "macos", &["My Game"]).is_none());
+            assert!(find_game_exe(&app, "macos", &["My Game"]).is_none());
         }
     }
 
