@@ -2151,7 +2151,7 @@
     if (want) focus(want, true);
   }
   // The launcher's own backdrop, under every page: Aurora (slow light), Grid (a floor running to the
-  // horizon) or Drift (specks of light), still on handhelds and with Lighter Launcher.
+  // horizon) or Drift (specks of light), still in Low Performance Mode.
   function ambient() {
     const m = bgMode() === 'grid' ? 'grid' : bgMode() === 'drift' ? 'drift' : 'aurora';
     let el = $(':scope > .tv-ambient', root);

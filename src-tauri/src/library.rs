@@ -294,8 +294,8 @@ pub struct Settings {
     /// Minimize the launcher while a game runs. Not set: on for handhelds, off otherwise.
     #[serde(default)]
     pub minimize_playing: Option<bool>,
-    /// Still pictures instead of moving ones, and no catalog refresh during games. Not set: on for
-    /// handhelds, off otherwise.
+    /// Low Performance Mode: still pictures instead of moving ones, and no catalog refresh during
+    /// games. Off unless the player turns it on, handhelds included.
     #[serde(default)]
     pub lighter: Option<bool>,
     /// Linux: how the launcher's window is drawn. "fast" (the graphics card's quickest way),
