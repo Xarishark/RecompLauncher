@@ -3429,8 +3429,7 @@ function pageSettings() {
       const hh = !!S.handheld, eff = (k) => (st[k] == null ? hh : !!st[k]);
       body = group(t('While Playing'), (hh ? `<p class="set-note">${esc(t('This PC is a handheld, so the launcher keeps out of the way while you play. Change it here.'))}</p>` : '')
           + (S.os === 'macos' ? `<p class="set-note">${esc(t('The in-game quick menu and screenshot capture are not available on Mac yet.'))}</p>` : row(t('Quick Menu Over Games'), t('Hold View on your controller (or press Ctrl+F12) for screenshots, settings and closing the game. Off: the launcher leaves your controller and keyboard alone while you play.'), sw('quick_menu', st.quick_menu !== false, t('Quick Menu Over Games'))))
-          + row(t('Minimize the Launcher While Playing'), t('The launcher goes away while a game runs and comes back when it closes.'), sw('minimize_playing', eff('minimize_playing'), t('Minimize the Launcher While Playing')))
-          + row(t('Lighter Launcher'), t('Still pictures and no animations, and nothing moves on Home while a game runs. Good for handhelds and older PCs.'), sw('lighter', eff('lighter'), t('Lighter Launcher'))));
+          + row(t('Minimize the Launcher While Playing'), t('The launcher goes away while a game runs and comes back when it closes.'), sw('minimize_playing', eff('minimize_playing'), t('Minimize the Launcher While Playing'))));
       break;
     }
     case 'look':
@@ -3442,6 +3441,7 @@ function pageSettings() {
         + row(t('Covers Only'), t('Hide the names under game covers in the Library and on Home.'), sw('hide_names', ui.hide_names, t('Covers Only'), 'ui-toggle'))
         + row(t('Show Game Names'), t('Name every recomp after its game, like Tears of the Kingdom instead of TotK Recomp. Names you gave games yourself stay.'), sw('game_names', ui.game_names, t('Show Game Names'), 'ui-toggle'))
         + row(t('Show Game Media'), t('Every version of a game shows the same cover, background, logo and icon: the recommended version\'s. The versions list keeps each one\'s own icon, and pictures you picked yourself stay.'), sw('game_media', ui.game_media, t('Show Game Media'), 'ui-toggle'))
+        + row(t('Low Performance Mode'), t('Still pictures and no animations, and nothing moves on Home while a game runs. For older PCs and handhelds that struggle; your games run the same.'), sw('lighter', !!st.lighter, t('Low Performance Mode')))
         // Linux: how the window is drawn, read when the launcher starts.
         + (S.os === 'linux' ? `<div class="set-row"><div class="k"><b>${esc(t('Graphics Mode'))}</b><span>${esc(t('How the launcher draws its window. Faster is smoother; Safer fixes a blank or flickering window. Takes effect the next time the launcher opens.'))}</span></div><div class="seg" role="radiogroup" aria-label="${esc(t('Graphics Mode'))}">${[['', t('Auto')], ['fast', t('Faster')], ['safe', t('Safer')]].map(([k, n]) => `<button type="button" role="radio" aria-checked="${(st.linux_graphics || '') === k}" data-act="gfx-mode" data-k="${k}">${esc(n)}</button>`).join('')}</div></div>` : ''))
         + group(t('Sidebar'), `<p class="set-note">${esc(t('Pick which sections the sidebar shows, and their order.'))}</p>` + sideRows(),
@@ -4309,10 +4309,11 @@ function fbCrumbs(path) {
   });
   return out;
 }
-// Lighter Launcher: no animations or moving pictures (CSS does the rest).
+// Low Performance Mode (saved as "lighter"): no animations or moving pictures (CSS does the rest).
+// Off unless the player turns it on, handhelds included: they draw the animations fine, and a
+// launcher that never moved on them looked broken.
 function applyLighter() {
-  const st = S.settings || {};
-  document.body.classList.toggle('lighter', st.lighter == null ? !!S.handheld : !!st.lighter);
+  document.body.classList.toggle('lighter', !!(S.settings || {}).lighter);
 }
 // Linux: some PCs draw the window slowly (the web view's safer way of drawing, mostly). Frames
 // are timed only while something moves (a scroll, a key, a click, the controller), and once
@@ -4342,13 +4343,13 @@ function watchSlow() {
 function tellSlow() {
   saveUi({ slow_told: true }, true).catch(() => {});
   modal(`<h2>${esc(t('The Launcher Is Drawing Slowly Here'))}</h2>
-    <p>${esc(S.os === 'macos' ? t('Scrolling and animations are choppy on this Mac. Lighter Launcher turns off the animations and moving pictures, which makes it smoother.') : t('Scrolling and animations are choppy on this PC. Lighter Launcher turns off the animations and moving pictures, which makes it smoother. If it\'s still choppy, try Graphics Mode: Faster in Settings → Appearance.'))}</p>
-    <div class="acts"><button type="button" class="btn" data-x="no">${esc(t('Not Now'))}</button><button type="button" class="btn main" data-x="lighter">${esc(t('Turn On Lighter Launcher'))}</button></div>`, async (x, close) => {
+    <p>${esc(S.os === 'macos' ? t('Scrolling and animations are choppy on this Mac. Low Performance Mode turns off the animations and moving pictures, which makes it smoother.') : t('Scrolling and animations are choppy on this PC. Low Performance Mode turns off the animations and moving pictures, which makes it smoother. If it\'s still choppy, try Graphics Mode: Faster in Settings → Appearance.'))}</p>
+    <div class="acts"><button type="button" class="btn" data-x="no">${esc(t('Not Now'))}</button><button type="button" class="btn main" data-x="lighter">${esc(t('Turn On Low Performance Mode'))}</button></div>`, async (x, close) => {
     if (x.dataset.x !== 'lighter') return;
     close();
     await saveSettings({ lighter: true }, true);
     applyLighter();
-    toast(t('Lighter Launcher is on. It\'s in Settings → While Playing.'));
+    toast(t('Low Performance Mode is on. It\'s in Settings → Appearance.'));
   }, t('The Launcher Is Drawing Slowly Here'));
 }
 async function pickFile(opts) {
@@ -7163,7 +7164,8 @@ async function act(el, e) {
     case 'toggle': {
       const k = el.dataset.k;
       // Not set yet: on for handhelds, off otherwise; a press sets the opposite of what shows.
-      if (k === 'minimize_playing' || k === 'lighter') { const now = S.settings[k] == null ? !!S.handheld : !!S.settings[k]; await saveSettings({ [k]: !now }); applyLighter(); return; }
+      if (k === 'minimize_playing') { const now = S.settings[k] == null ? !!S.handheld : !!S.settings[k]; await saveSettings({ [k]: !now }); return; }
+      if (k === 'lighter') { await saveSettings({ lighter: !S.settings.lighter }); applyLighter(); return; }
       if (k === 'hide_ai' && S.view === 'discover') { saveSettings({ hide_ai: !S.settings.hide_ai }, true); return updateDiscover(); }
       // Sharing: what shows is what's sent (nothing before the player was asked).
       if (k === 'share_usage' || k === 'share_stats') return saveSettings({ [k]: !(S.settings.data_asked && S.settings[k]), data_asked: true });
