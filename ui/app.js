@@ -6274,8 +6274,10 @@ function pageRoms() {
   if (!dirs.length) return `<div class="page">${head}<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg><h2>${esc(t('No ROM folders yet'))}</h2><p>${esc(t('Set up Games/ROMs and put each game in its console\'s folder, or add a folder you already have.'))}</p></div></div>`;
   const cons = all.map((k) => `<button type="button" class="rm-con${k === cur ? ' on' : ''}${counts[k] ? '' : ' none'}" data-act="rom-con" data-k="${esc(k)}" aria-pressed="${k === cur}">${conBadge(k)}<span class="nm">${esc(conName(k))}</span><b class="n">${counts[k] ? fmtNum(counts[k]) : ''}</b></button>`).join('');
   const list = romGames(roms.filter((r) => romConsole(r) === cur));
-  const note = cur === 'unknown' ? `<p class="rm-note">${esc(t('The launcher couldn\'t tell which console these are for. Put them in their console\'s folder and look again.'))}</p>` : '';
-  const rows = list.map((g) => {
+  const note = cur === 'unknown' ? `<p class="rm-note">${esc(t('The launcher couldn\'t tell which game these are. Press Identify to pick it, or put them in their console\'s folder in Games/ROMs and look again.'))}</p>` : '';
+  // Kept for the rows' Identify buttons, which say which row by its place in this list.
+  S.romRows = list;
+  const rows = list.map((g, i) => {
     // The game first, then its updates and DLC.
     const copies = g.copies.slice().sort((a, b) => (romPart(a).kind !== 'game') - (romPart(b).kind !== 'game') || (romPart(a).disc || 0) - (romPart(b).disc || 0));
     const recs = g.game ? recompsOfGame(g.game) : uniq(copies.flatMap(romRecomps).map((a) => a.id)).map((id) => byId(id) || { id, name: id });
@@ -6283,7 +6285,10 @@ function pageRoms() {
     // How the game was told, when it wasn't by the file itself: the player's word, or its name only.
     const hows = copies.map((r) => (romGameOf(r) || {}).how);
     const how = hows.includes('player') ? t('Paired by you') : g.game && !hows.includes('matched') ? t('Matched by name') : '';
-    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</b><span class="rm-copies">${romCopies(copies)}</span></div><div class="rm-p">${paired}</div></div>`;
+    // Identify for a row that isn't a known game yet; Change for one the player wants to correct.
+    const idLabel = g.game ? t('Change…') : t('Identify…');
+    const idBtn = `<button type="button" class="btn sm rm-id" data-act="rom-id" data-i="${i}" title="${esc(t('Pick which game this is'))}">${esc(idLabel)}</button>`;
+    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</b><span class="rm-copies">${romCopies(copies)}</span></div><div class="rm-p">${paired}</div>${idBtn}</div>`;
   }).join('');
   const empty = `<div class="empty rm-empty"><p>${esc(tf('No {console} games found yet.', { console: conName(cur) }))}</p></div>`;
   return `<div class="page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
@@ -6296,6 +6301,95 @@ async function enterRoms() {
   if (!S.ownedOk) { await loadOwned(); if (S.view === 'roms') render(true); }
   await loadRomGames();
 }
+// The games that have recomps, one per console and name, with the names of their recomps (what
+// a ROM can be paired to: a copy serves every recomp of its game).
+function romCatalogGames() {
+  const by = new Map();
+  for (const a of (S.cat && S.cat.apps) || []) {
+    const game = String(a.game || '').trim();
+    if (!game || !a.origin) continue;
+    const k = a.origin + ':' + game.toLowerCase();
+    if (!by.has(k)) by.set(k, { console: a.origin, game, recomps: [] });
+    by.get(k).recomps.push(a.name || a.id);
+  }
+  return [...by.values()].sort((x, y) => x.game.localeCompare(y.game));
+}
+const sameGame = (a, b) => !!a && !!b && a.console === b.console && a.game.toLowerCase() === b.game.toLowerCase();
+
+// Identify: the player says which game a row's copies are (every copy on the row at once). Pick
+// the console, search its games, save. Unpair takes the player's word back.
+function romIdentify(row) {
+  const games = romCatalogGames();
+  if (!games.length) return toast(t('The list of recomps hasn\'t loaded yet. Try again once you\'re online.'), true);
+  const paths = row.copies.map((r) => r.path);
+  const mine = row.copies.some((r) => (romGameOf(r) || {}).how === 'player');
+  const consoles = uniq(games.map((g) => g.console)).sort((a, b) => conName(a).localeCompare(conName(b)));
+  const start = row.game ? row.game.console : S.romCon;
+  let con = consoles.includes(start) ? start : consoles[0];
+  let selected = row.game ? games.findIndex((g) => sameGame(g, row.game)) : -1;
+  const conOpts = consoles.map((c) => `<option value="${esc(c)}">${esc(conName(c))}</option>`).join('');
+  const unpair = mine ? `<button type="button" class="btn" data-x="unpair">${esc(t('Unpair'))}</button>` : '<span></span>';
+  const m = modal(`<h2>${esc(t('Which game is this?'))}</h2>
+    <p>${esc(tf('Pick the game {name} is a copy of. Every recomp of that game can use it then. Nothing is copied or moved.', { name: row.title }))}</p>
+    <label class="mh-f"><span>${esc(t('Console'))}</span><select class="field" id="rid-con">${conOpts}</select></label>
+    <label class="mh-f"><span>${esc(t('Search games'))}</span><input class="field" id="rid-q" type="search" autocomplete="off"></label>
+    <label class="mh-f"><span>${esc(t('Game'))}</span><select class="field project-options" id="rid-game" size="8"></select></label>
+    <p class="muted" id="rid-note"></p>
+    <p class="err" id="rid-err" hidden></p>
+    <div class="acts" style="justify-content:space-between">${unpair}<span style="display:flex;gap:10px"><button type="button" class="btn" data-x="no">${esc(t('Cancel'))}</button><button type="button" class="btn main" data-x="yes">${esc(t('Save'))}</button></span></div>`,
+  async (x, close) => {
+    if (m.dataset.busy) return;
+    if (x.dataset.x === 'yes' && selected >= 0) return save(close);
+    if (x.dataset.x === 'unpair') return forget(close);
+  }, t('Which game is this?'));
+  $('.modal', m).classList.add('project-picker');
+  const busy = (on) => { if (on) m.dataset.busy = '1'; else delete m.dataset.busy; for (const b of $$('button, select, input', m)) b.disabled = on; };
+  const err = (e) => { const p = $('#rid-err', m); p.textContent = String(e && e.message ? e.message : e); p.hidden = false; };
+  const update = () => {
+    const g = games[selected];
+    $('[data-x="yes"]', m).disabled = !g;
+    $('#rid-note', m).textContent = g ? tf('These can use it: {recomps}.', { recomps: uniq(g.recomps).join(', ') }) : t('Pick a game from the list.');
+  };
+  const draw = () => {
+    const q = $('#rid-q', m).value;
+    const shown = games.map((g, i) => [g, i]).filter(([g, i]) => g.console === con && (i === selected || sMatch(`${g.game} ${g.recomps.join(' ')}`, q)));
+    $('#rid-game', m).innerHTML = shown.map(([g, i]) => `<option value="${i}">${esc(g.game)}</option>`).join('');
+    $('#rid-game', m).value = String(selected);
+    update();
+  };
+  // After a change, the page and the matches follow: the recomps of a newly paired game go into
+  // the Library like the ones the scan finds.
+  const refresh = async () => { await loadOwned(); await addOwned(); await loadRomGames(); };
+  async function save(close) {
+    const g = games[selected];
+    busy(true);
+    try {
+      for (const path of paths) await invoke('rom_pair', { path, console: g.console, game: g.game });
+    } catch (e) { busy(false); return err(e); }
+    close();
+    // The row moves to its game's console: the page follows it there.
+    S.romCon = g.console;
+    await refresh();
+    toast(tf('Paired with {game}.', { game: g.game }));
+  }
+  async function forget(close) {
+    busy(true);
+    try {
+      for (const path of paths) await invoke('rom_unpair', { path });
+    } catch (e) { busy(false); return err(e); }
+    close();
+    await refresh();
+    toast(t('Unpaired. The launcher matches it on its own again.'));
+  }
+  $('#rid-con', m).value = con;
+  $('#rid-con', m).addEventListener('change', (e) => { con = e.target.value; if (games[selected] && games[selected].console !== con) selected = -1; draw(); });
+  $('#rid-q', m).addEventListener('input', draw);
+  $('#rid-game', m).addEventListener('change', (e) => { selected = Number(e.target.value); update(); });
+  draw();
+  $('#rid-q', m).focus();
+  return m;
+}
+
 // A new issue on RecompLauncher's GitHub about the ROM Manager, filled in with the launcher's
 // version, the system and what the page shows. No file names or paths: those are the player's.
 function romBugUrl() {
@@ -7912,6 +8006,7 @@ async function act(el, e) {
     case 'rom-remove': await saveSettings({ rom_dirs: (S.settings.rom_dirs || []).filter((d) => d !== el.dataset.path) }); return scanRoms();
     case 'rom-scan': return scanRoms();
     case 'rom-games': return setUpGamesRoms();
+    case 'rom-id': { const row = (S.romRows || [])[Number(el.dataset.i)]; return row && romIdentify(row); }
     case 'rom-bug': return invoke('open_url', { url: romBugUrl() }).then(() => toast(t('The report is filled in. Say what happened, then submit it on the page.'))).catch(fail);
     case 'rom-con': S.romCon = el.dataset.k; return render(true);
     case 'rom-emus': return emuFolders();
