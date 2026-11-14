@@ -585,6 +585,7 @@ body.light .rm-copy{background:rgba(20,120,130,.08);border-color:rgba(20,120,130
 .rm-pair{height:28px;padding:0 11px;border-radius:999px;font:600 12.5px Figtree,sans-serif;color:var(--cyan);background:color-mix(in srgb,var(--cyan) 14%,transparent)}
 .rm-pair:hover{background:color-mix(in srgb,var(--cyan) 24%,transparent)}
 .rm-none{color:var(--dim);font-size:12.5px}
+.rm-how{margin-left:10px;font:500 12px Figtree,sans-serif;color:var(--dim)}
 .rm-empty{padding:40px 20px}
 /* Little room: the consoles go above the list as a wrapping row, and a game's recomps under its name. */
 @container rm (max-width:760px){

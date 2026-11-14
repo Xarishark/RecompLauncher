@@ -394,6 +394,10 @@ pub struct Library {
     /// What the last ROM scan found.
     #[serde(default)]
     pub roms: Vec<crate::roms::RomFile>,
+    /// Files the player said are a copy of a game (in the ROM Manager). Kept here, not in the
+    /// settings, as the window saves those whole.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rom_pairs: Vec<crate::roms::RomPair>,
     /// Catalog ids already seen, so a new recomp can be told apart.
     #[serde(default)]
     pub seen_apps: Vec<String>,
@@ -577,6 +581,7 @@ impl Library {
         }
         let field = |k: &str| v.get(k).cloned().unwrap_or(Value::Null);
         l.roms = serde_json::from_value(field("roms")).unwrap_or_default();
+        l.rom_pairs = serde_json::from_value(field("rom_pairs")).unwrap_or_default();
         l.seen_apps = serde_json::from_value(field("seen_apps")).unwrap_or_default();
         l.seen_versions = serde_json::from_value(field("seen_versions")).unwrap_or_default();
         l.project_aliases = serde_json::from_value(field("project_aliases")).unwrap_or_default();

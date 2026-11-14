@@ -840,6 +840,125 @@ pub fn match_catalog(cat: &Value, roms: &[RomFile]) -> HashMap<String, RomFile> 
     out
 }
 
+/// A game a ROM is a copy of: its console and the catalog's name for the game. A copy belongs to
+/// the game, not to one recomp, so every recomp of that game (catalog entries with the same
+/// "origin" and "game") can use it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GameRef {
+    pub console: String,
+    pub game: String,
+}
+
+impl GameRef {
+    /// The game a catalog entry is a recomp of. None when the entry doesn't name one.
+    pub fn of_app(app: &Value) -> Option<GameRef> {
+        let game = app.get("game").and_then(Value::as_str).unwrap_or("").trim();
+        if game.is_empty() {
+            return None;
+        }
+        let console = app.get("origin").and_then(Value::as_str).unwrap_or("");
+        Some(GameRef { console: console.into(), game: game.into() })
+    }
+
+    /// The same game. Names are compared without case, as two entries may write one name two ways.
+    pub fn same(&self, other: &GameRef) -> bool {
+        self.console == other.console && self.game.to_lowercase() == other.game.to_lowercase()
+    }
+}
+
+/// The player's word on which game a file is. It keeps what the file was then, so another file
+/// put in its place later isn't taken for that game.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RomPair {
+    pub path: PathBuf,
+    pub game: GameRef,
+    #[serde(default)]
+    pub stamp: String,
+}
+
+/// What tells a file from one put in its place: its size and when it was written. A folder (an
+/// extracted game) by when it was written only, as a folder's size means nothing.
+pub fn stamp(p: &Path) -> String {
+    let Ok(m) = fs::metadata(p) else { return String::new() };
+    let written = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+    let secs = written.map(|d| d.as_secs()).unwrap_or(0);
+    let size = if m.is_dir() { 0 } else { m.len() };
+    format!("{size} {secs}")
+}
+
+impl RomPair {
+    pub fn new(path: PathBuf, game: GameRef) -> RomPair {
+        let stamp = stamp(&path);
+        RomPair { path, game, stamp }
+    }
+
+    /// Still the file that was paired: there, and not changed or replaced since.
+    pub fn holds(&self) -> bool {
+        let now = stamp(&self.path);
+        !now.is_empty() && now == self.stamp
+    }
+}
+
+/// The game a found file is a copy of, and how that was told: "player" (they paired it),
+/// "matched" (a recomp's checks picked it as its copy) or "name" (it goes with a game by its
+/// name: another disc, an update, extra content, a second copy).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RomGame {
+    #[serde(flatten)]
+    pub game: GameRef,
+    pub how: &'static str,
+}
+
+/// Which game each found file is a copy of. The player's pairing comes first, then the file a
+/// recomp's checks picked (`matched`: recomp id to its copy), then a match by name.
+pub fn games_of(cat: &Value, roms: &[RomFile], matched: &HashMap<String, RomFile>, pairs: &[RomPair]) -> HashMap<PathBuf, RomGame> {
+    let mut out = HashMap::new();
+    for p in pairs {
+        let found = roms.iter().any(|r| r.path == p.path);
+        if found && p.holds() {
+            out.insert(p.path.clone(), RomGame { game: p.game.clone(), how: "player" });
+        }
+    }
+    let apps = cat.get("apps").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    for a in apps {
+        let (Some(id), Some(game)) = (a.get("id").and_then(Value::as_str), GameRef::of_app(a)) else { continue };
+        let Some(r) = matched.get(id) else { continue };
+        out.entry(r.path.clone()).or_insert(RomGame { game, how: "matched" });
+    }
+    for a in apps {
+        let Some(game) = GameRef::of_app(a) else { continue };
+        for r in files_of(a, roms) {
+            out.entry(r.path).or_insert_with(|| RomGame { game: game.clone(), how: "name" });
+        }
+    }
+    out
+}
+
+/// The player's pairings over the copies the checks found (recomp id to its copy). A file paired
+/// to one game stops being the copy for a recomp of another, and becomes the copy for every recomp
+/// of its own game that has none.
+pub fn apply_pairs(cat: &Value, copies: &mut HashMap<String, RomFile>, roms: &[RomFile], pairs: &[RomPair]) {
+    let held: Vec<&RomPair> = pairs.iter().filter(|p| p.holds()).collect();
+    if held.is_empty() {
+        return;
+    }
+    let apps = cat.get("apps").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    for a in apps {
+        let (Some(id), Some(game)) = (a.get("id").and_then(Value::as_str), GameRef::of_app(a)) else { continue };
+        let paired_elsewhere = copies.get(id).is_some_and(|r| held.iter().any(|p| p.path == r.path && !p.game.same(&game)));
+        if paired_elsewhere {
+            copies.remove(id);
+        }
+        if copies.contains_key(id) {
+            continue;
+        }
+        let ours = held.iter().filter(|p| p.game.same(&game)).find_map(|p| roms.iter().find(|r| r.path == p.path));
+        if let Some(r) = ours {
+            copies.insert(id.to_string(), r.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1189,6 +1308,75 @@ mod tests {
         std::fs::write(&chd, b"MComprHD").unwrap();
         let rom = identify(&chd, 60 * 1024 * 1024).unwrap();
         assert_eq!(rom.system, "saturn");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn pair_fixture(name: &str) -> (PathBuf, RomFile) {
+        let d = tmp(name);
+        let p = d.join("mystery.iso");
+        std::fs::write(&p, b"a disc").unwrap();
+        let rom = RomFile { path: p, system: "x360".into(), title: "mystery".into(), region: String::new(), size: 6 };
+        (d, rom)
+    }
+
+    fn two_recomps_of_one_game() -> Value {
+        serde_json::json!({ "apps": [
+            { "id": "lo-a", "game": "Lost Odyssey", "origin": "x360" },
+            { "id": "lo-b", "game": "lost odyssey", "origin": "x360" },
+            { "id": "other", "game": "Black", "origin": "x360" },
+        ] })
+    }
+
+    #[test]
+    fn a_pairing_holds_until_the_file_changes() {
+        let (d, rom) = pair_fixture("pair-holds");
+        let pair = RomPair::new(rom.path.clone(), GameRef { console: "x360".into(), game: "Lost Odyssey".into() });
+        assert!(pair.holds());
+        std::fs::write(&rom.path, b"another disc, longer").unwrap();
+        assert!(!pair.holds());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_paired_file_serves_every_recomp_of_its_game() {
+        let (d, rom) = pair_fixture("pair-serves");
+        let pairs = [RomPair::new(rom.path.clone(), GameRef { console: "x360".into(), game: "Lost Odyssey".into() })];
+        let mut copies = HashMap::new();
+        apply_pairs(&two_recomps_of_one_game(), &mut copies, &[rom.clone()], &pairs);
+        assert_eq!(copies.get("lo-a"), Some(&rom));
+        assert_eq!(copies.get("lo-b"), Some(&rom));
+        assert_eq!(copies.get("other"), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_paired_file_stops_being_another_games_copy() {
+        let (d, rom) = pair_fixture("pair-moves");
+        let pairs = [RomPair::new(rom.path.clone(), GameRef { console: "x360".into(), game: "Lost Odyssey".into() })];
+        let mut copies = HashMap::from([("other".to_string(), rom.clone())]);
+        apply_pairs(&two_recomps_of_one_game(), &mut copies, &[rom.clone()], &pairs);
+        assert_eq!(copies.get("other"), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_players_pairing_comes_before_a_match() {
+        let (d, rom) = pair_fixture("pair-first");
+        let pairs = [RomPair::new(rom.path.clone(), GameRef { console: "x360".into(), game: "Lost Odyssey".into() })];
+        let matched = HashMap::from([("other".to_string(), rom.clone())]);
+        let games = games_of(&two_recomps_of_one_game(), &[rom.clone()], &matched, &pairs);
+        let g = games.get(&rom.path).unwrap();
+        assert_eq!((g.game.game.as_str(), g.how), ("Lost Odyssey", "player"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_matched_file_is_its_recomps_game() {
+        let (d, rom) = pair_fixture("pair-matched");
+        let matched = HashMap::from([("other".to_string(), rom.clone())]);
+        let games = games_of(&two_recomps_of_one_game(), &[rom.clone()], &matched, &[]);
+        let g = games.get(&rom.path).unwrap();
+        assert_eq!((g.game.game.as_str(), g.how), ("Black", "matched"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

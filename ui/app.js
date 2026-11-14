@@ -6150,12 +6150,24 @@ const conBadge = (id) => CONSOLE_ICONS.has(id) ? `<img class="con-img" src="img/
 // ("xdvdfs" is Xbox or Xbox 360, "playstation" is PS1 or PS2) or nothing said.
 // A .nup holds a Switch or a Switch 2 game and the scan calls it Switch 2: kept in the switch folder,
 // it's shown with the Switch copies of its game.
+// A file that's a copy of a known game sits with that game's console.
 function romConsole(r) {
+  const g = romGameOf(r);
+  if (g && g.console) return g.console;
   if (/\.nup$/i.test(r.path) && /[\\/]switch[\\/]/i.test(r.path)) return 'switch';
   return r.system && r.system !== 'xdvdfs' && r.system !== 'playstation' ? r.system : 'unknown';
 }
-// The recomps the launcher paired with this file.
+// The game a file is a copy of ({ console, game, how }), from the core's rom_games: "player" when
+// they paired it, "matched" when a recomp's checks picked it, "name" when its name says.
+const romGameOf = (r) => (S.romGames || {})[r.path] || null;
+// Every recomp of a game: a copy of the game serves them all, not just the one it was matched for.
+const recompsOfGame = (g) => (S.cat.apps || []).filter((a) => a.origin === g.console && String(a.game || '').trim().toLowerCase() === g.game.toLowerCase());
+// The recomps the launcher paired with this file, before rom_games has answered.
 const romRecomps = (r) => Object.entries(S.owned || {}).filter(([, f]) => f && f.path === r.path).map(([id]) => byId(id) || { id, name: id });
+async function loadRomGames() {
+  try { S.romGames = await invoke('rom_games'); } catch (e) { S.romGames = null; }
+  if (S.view === 'roms') render(true);
+}
 // What a copy is to its game, from its name (like roms::part_of): an update, extra content, a disc
 // of a set, or the game. A Switch title ID ending in 800 is an update, another non-zero end is DLC.
 function romPart(r) {
@@ -6171,6 +6183,9 @@ function romPart(r) {
 // disc words, versions), so every copy of one game lands on one row.
 const ROM_NOISE = new Set(['the', 'of', 'a', 'and', 'usa', 'us', 'europe', 'rev', 'update', 'upd', 'patch', 'dlc', 'disc', 'disk', 'cd']);
 function romGameKey(r) {
+  // A copy of a known game goes on that game's row, whatever it's called.
+  const g = romGameOf(r);
+  if (g) return 'game:' + g.console + ':' + g.game.toLowerCase();
   const plain = String(r.title || '').toLowerCase().replace(/[’']/g, '').replace(/\([^)]*\)|\[[^\]]*\]/g, ' ');
   const words = plain.split(/[^a-z0-9]+/).filter((w) => w && !ROM_NOISE.has(w) && !/^v\d+$/.test(w) && !/^\d$/.test(w));
   return words.join(' ') || String(r.path);
@@ -6181,7 +6196,11 @@ const romShownTitle = (copies) => copies.map((r) => String(r.title || '').replac
 function romGames(list) {
   const by = new Map();
   for (const r of list) { const k = romGameKey(r); if (!by.has(k)) by.set(k, []); by.get(k).push(r); }
-  return [...by.values()].map((copies) => ({ title: romShownTitle(copies), copies })).sort((a, b) => a.title.localeCompare(b.title));
+  const entry = (copies) => {
+    const game = romGameOf(copies[0]);
+    return { game, title: game ? game.game : romShownTitle(copies), copies };
+  };
+  return [...by.values()].map(entry).sort((a, b) => a.title.localeCompare(b.title));
 }
 // One copy as a pill: its format (or Folder), and what sets it apart. It opens where the copy is.
 function romPill(r) {
@@ -6220,9 +6239,12 @@ function pageRoms() {
   const rows = list.map((g) => {
     // The game first, then its updates and DLC.
     const copies = g.copies.slice().sort((a, b) => (romPart(a).kind !== 'game') - (romPart(b).kind !== 'game') || (romPart(a).disc || 0) - (romPart(b).disc || 0));
-    const recs = uniq(copies.flatMap(romRecomps).map((a) => a.id)).map((id) => byId(id) || { id, name: id });
+    const recs = g.game ? recompsOfGame(g.game) : uniq(copies.flatMap(romRecomps).map((a) => a.id)).map((id) => byId(id) || { id, name: id });
     const paired = recs.length ? recs.map((a) => `<button type="button" class="rm-pair" data-act="open" data-id="${esc(a.id)}">${esc(a.name)}</button>`).join('') : `<span class="rm-none">${esc(t('No recomp found'))}</span>`;
-    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}</b><span class="rm-copies">${copies.map(romPill).join('')}</span></div><div class="rm-p">${paired}</div></div>`;
+    // How the game was told, when it wasn't by the file itself: the player's word, or its name only.
+    const hows = copies.map((r) => (romGameOf(r) || {}).how);
+    const how = hows.includes('player') ? t('Paired by you') : g.game && !hows.includes('matched') ? t('Matched by name') : '';
+    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</b><span class="rm-copies">${copies.map(romPill).join('')}</span></div><div class="rm-p">${paired}</div></div>`;
   }).join('');
   const empty = `<div class="empty rm-empty"><p>${esc(tf('No {console} games found yet.', { console: conName(cur) }))}</p></div>`;
   return `<div class="page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
@@ -6233,6 +6255,7 @@ function pageRoms() {
 async function enterRoms() {
   for (const d of (S.settings.rom_dirs || []).filter(isGamesRoms)) invoke('rom_console_folders', { path: d }).catch(() => {});
   if (!S.ownedOk) { await loadOwned(); if (S.view === 'roms') render(true); }
+  await loadRomGames();
 }
 async function setUpGamesRoms() {
   const p = await invoke('games_rom_folder').catch(fail);
@@ -6430,6 +6453,8 @@ async function scanRoms() {
   toast(t('Looking through your folders…'));
   try { S.roms = await invoke('scan_roms'); await loadOwned(); const added = await addOwned(); toast(tn(S.roms.length, 'Found 1 game file.', 'Found {n} game files.') + ' ' + (added ? tn(added, '1 recomp went into your Library.', '{n} recomps went into your Library.') : tf('{n} have recomps.', { n: Object.keys(S.owned).length }))); } catch (e) { fail(e); }
   render(true);
+  // The ROM Manager's rows follow the games the new files are copies of.
+  if (S.view === 'roms') loadRomGames();
 }
 // Recomps for games the scan found go into the Library (not installed yet), ready for Easy Setup.
 // The ones it put there leave again once their game isn't found any more (its folder was taken

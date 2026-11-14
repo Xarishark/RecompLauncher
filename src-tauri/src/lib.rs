@@ -1408,14 +1408,68 @@ async fn scan_roms(st: State<'_, App>) -> Res<Vec<roms::RomFile>> {
     Ok(found)
 }
 
+/// What the ROM matching works from: the found files, installed games' folders and the player's pairings.
+fn rom_inputs(st: &App) -> (Vec<roms::RomFile>, HashMap<String, PathBuf>, Vec<roms::RomPair>) {
+    let l = st.lib.lock().unwrap();
+    let dirs = l.installed.values().map(|g| (g.id.clone(), g.path.clone())).collect();
+    (l.roms.clone(), dirs, l.rom_pairs.clone())
+}
+
+/// Each recomp's copy: what the checks find, with the player's pairings over it.
+fn copies_with_pairs(cat: &Value, found: &[roms::RomFile], dirs: &HashMap<String, PathBuf>, pairs: &[roms::RomPair]) -> HashMap<String, roms::RomFile> {
+    let mut copies = copies_for(cat, found, dirs);
+    roms::apply_pairs(cat, &mut copies, found, pairs);
+    copies
+}
+
 #[tauri::command]
 async fn rom_matches(st: State<'_, App>) -> Res<HashMap<String, roms::RomFile>> {
     let cat = catalog::catalog(&st.http, &st.dir, false).await?.data;
-    let (found, dirs) = {
-        let l = st.lib.lock().unwrap();
-        (l.roms.clone(), l.installed.values().map(|g| (g.id.clone(), g.path.clone())).collect::<HashMap<_, _>>())
-    };
-    Ok(tokio::task::spawn_blocking(move || copies_for(&cat, &found, &dirs)).await.unwrap_or_default())
+    let (found, dirs, pairs) = rom_inputs(&st);
+    Ok(tokio::task::spawn_blocking(move || copies_with_pairs(&cat, &found, &dirs, &pairs)).await.unwrap_or_default())
+}
+
+/// For the ROM Manager: which game each found file is a copy of (by its path), and how that was told.
+#[tauri::command]
+async fn rom_games(st: State<'_, App>) -> Res<HashMap<String, roms::RomGame>> {
+    let cat = catalog::catalog(&st.http, &st.dir, false).await?.data;
+    let (found, dirs, pairs) = rom_inputs(&st);
+    let games = tokio::task::spawn_blocking(move || {
+        let copies = copies_with_pairs(&cat, &found, &dirs, &pairs);
+        roms::games_of(&cat, &found, &copies, &pairs)
+    });
+    let games = games.await.unwrap_or_default();
+    Ok(games.into_iter().map(|(p, g)| (p.to_string_lossy().to_string(), g)).collect())
+}
+
+/// The player says a found file is a copy of a game in the catalog. It then serves every recomp of that game.
+#[tauri::command(async)]
+fn rom_pair(st: State<'_, App>, path: String, console: String, game: String) -> Res<()> {
+    let path = PathBuf::from(path);
+    let want = roms::GameRef { console, game };
+    let cat = cached_catalog(&st);
+    let apps = cat.get("apps").and_then(Value::as_array).cloned().unwrap_or_default();
+    if !apps.iter().filter_map(roms::GameRef::of_app).any(|g| g.same(&want)) {
+        return Err(Error::Msg("That game has no recomp in the list.".into()));
+    }
+    {
+        let mut l = st.lib.lock().unwrap();
+        if !l.roms.iter().any(|r| r.path == path) {
+            return Err(Error::Msg("That file isn't among the ones found. Look again first.".into()));
+        }
+        l.rom_pairs.retain(|p| p.path != path);
+        l.rom_pairs.push(roms::RomPair::new(path, want));
+    }
+    st.save();
+    Ok(())
+}
+
+/// The player takes back their word on a file: it's matched as the launcher finds it again.
+#[tauri::command(async)]
+fn rom_unpair(st: State<'_, App>, path: String) {
+    let path = PathBuf::from(path);
+    st.lib.lock().unwrap().rom_pairs.retain(|p| p.path != path);
+    st.save();
 }
 
 #[derive(Serialize)]
@@ -1639,7 +1693,7 @@ async fn fs_paste(from: String, to_dir: String, cut: bool) -> Res<String> {
 #[tauri::command]
 async fn fs_list(st: State<'_, App>, path: String) -> Res<FolderView> {
     let cat = cached_catalog(&st);
-    let dirs: HashMap<String, PathBuf> = st.lib.lock().unwrap().installed.values().map(|g| (g.id.clone(), g.path.clone())).collect();
+    let (_, dirs, pairs) = rom_inputs(&st);
     tauri::async_runtime::spawn_blocking(move || {
         let listing = files::list(Path::new(&path));
         let found: Vec<roms::RomFile> = listing
@@ -1651,7 +1705,7 @@ async fn fs_list(st: State<'_, App>, path: String) -> Res<FolderView> {
             .collect();
         let mut games = HashMap::new();
         if !found.is_empty() {
-            for (id, r) in copies_for(&cat, &found, &dirs) {
+            for (id, r) in copies_with_pairs(&cat, &found, &dirs, &pairs) {
                 let name = catalog::app(&cat, &id).map(|a| str_of(a, "name").to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone());
                 games.insert(r.path.display().to_string(), GameHere { id, name });
             }
@@ -8790,6 +8844,9 @@ pub fn run() {
             emulator_folders,
             games_rom_folder,
             rom_console_folders,
+            rom_games,
+            rom_pair,
+            rom_unpair,
             add_github,
             github_lookup,
             github_art,
