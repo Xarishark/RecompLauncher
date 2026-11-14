@@ -6261,18 +6261,32 @@ function pageRoms() {
   for (const r of roms) { const c = romConsole(r); (keys[c] = keys[c] || new Set()).add(romGameKey(r)); }
   const counts = Object.fromEntries(Object.entries(keys).map(([c, s]) => [c, s.size]));
   // Every console recomps come from and every one a file was found for: the ones with files first.
-  const all = uniq([...((S.cat && S.cat.origins) || []).map((o) => o.id), ...Object.keys(counts)]).filter((k) => k !== 'unknown' && k !== 'other');
+  // PC games aren't ROMs, so PC isn't one of them.
+  const notConsoles = ['unknown', 'other', 'pc'];
+  const all = uniq([...((S.cat && S.cat.origins) || []).map((o) => o.id), ...Object.keys(counts)]).filter((k) => !notConsoles.includes(k));
   all.sort((a, b) => (counts[b] ? 1 : 0) - (counts[a] ? 1 : 0) || conName(a).localeCompare(conName(b)));
   if (counts.unknown) all.push('unknown');
-  if (!all.includes(S.romCon)) S.romCon = all.find((k) => counts[k]) || all[0] || '';
+  // A console with games, until the player picks one: the page is drawn before the scan has
+  // answered, and an empty console picked then shouldn't stay.
+  const firstWithGames = all.find((k) => counts[k]);
+  const keepPick = all.includes(S.romCon) && (S.romConPicked || counts[S.romCon] || !firstWithGames);
+  if (!keepPick) S.romCon = firstWithGames || all[0] || '';
   const cur = S.romCon;
   const setup = dirs.some(isGamesRoms) ? '' : `<button type="button" class="btn main" data-act="rom-games" title="${esc(t('A folder for each console in Games/ROMs. Put your ROMs and disc images in their console\'s folder.'))}">${esc(t('Set Up Games/ROMs'))}</button>`;
   // It's a beta: said above the title, with a way to tell us what went wrong at the top right.
   const bug = `<button type="button" class="btn sm rm-bug" data-act="rom-bug" title="${esc(t('Opens a new issue on RecompLauncher\'s GitHub, filled in with your launcher version and system'))}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7.5V6a3 3 0 0 1 6 0v1.5"/><rect x="7" y="7.5" width="10" height="12" rx="5"/><path d="M12 11v8.5M4 13h3M17 13h3M5 8.5l2.5 1.5M19 8.5 16.5 10M5 18.5l2.5-1.5M19 18.5 16.5 17"/></svg>${esc(t('Report a bug'))}</button>`;
-  const head = `<div class="head rm-head"><div><span class="bh-tag rm-beta">${esc(t('Beta'))}</span><h1>${esc(t('ROM Manager'))}</h1><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div>
-    <div class="rm-side">${bug}<div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan">${esc(t('Look again'))}</button>` : ''}</div></div></div>`;
+  // Beta and Report a bug share the top line, so the bug button stays at the top right however
+  // the title and the buttons under it wrap.
+  const head = `<div class="rm-top"><span class="bh-tag">${esc(t('Beta'))}</span>${bug}</div><div class="head"><div><h1>${esc(t('ROM Manager'))}</h1><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div>
+    <div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan">${esc(t('Look again'))}</button>` : ''}</div></div>`;
   if (!dirs.length) return `<div class="page">${head}<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg><h2>${esc(t('No ROM folders yet'))}</h2><p>${esc(t('Set up Games/ROMs and put each game in its console\'s folder, or add a folder you already have.'))}</p></div></div>`;
-  const cons = all.map((k) => `<button type="button" class="rm-con${k === cur ? ' on' : ''}${counts[k] ? '' : ' none'}" data-act="rom-con" data-k="${esc(k)}" aria-pressed="${k === cur}">${conBadge(k)}<span class="nm">${esc(conName(k))}</span><b class="n">${counts[k] ? fmtNum(counts[k]) : ''}</b></button>`).join('');
+  // The consoles with games (and the open one); the empty ones only when asked for, as a list of
+  // thirty mostly empty consoles pushes the games out of sight.
+  const shown = S.romAllCons || !firstWithGames ? all : all.filter((k) => counts[k] || k === cur);
+  const hidden = all.length - shown.length;
+  const more = !firstWithGames ? '' : S.romAllCons ? t('Only consoles with games') : tn(hidden, '1 more console', '{n} more consoles');
+  const moreBtn = more ? `<button type="button" class="rm-con rm-more" data-act="rom-allcons">${esc(more)}</button>` : '';
+  const cons = shown.map((k) => `<button type="button" class="rm-con${k === cur ? ' on' : ''}${counts[k] ? '' : ' none'}" data-act="rom-con" data-k="${esc(k)}" aria-pressed="${k === cur}">${conBadge(k)}<span class="nm">${esc(conName(k))}</span><b class="n">${counts[k] ? fmtNum(counts[k]) : ''}</b></button>`).join('') + moreBtn;
   const list = romGames(roms.filter((r) => romConsole(r) === cur));
   const note = cur === 'unknown' ? `<p class="rm-note">${esc(t('The launcher couldn\'t tell which game these are. Press Identify to pick it, or put them in their console\'s folder in Games/ROMs and look again.'))}</p>` : '';
   // Kept for the rows' Identify buttons, which say which row by its place in this list.
@@ -6307,7 +6321,8 @@ function romCatalogGames() {
   const by = new Map();
   for (const a of (S.cat && S.cat.apps) || []) {
     const game = String(a.game || '').trim();
-    if (!game || !a.origin) continue;
+    // PC games aren't ROMs: nothing to pair with them.
+    if (!game || !a.origin || a.origin === 'pc' || a.origin === 'other') continue;
     const k = a.origin + ':' + game.toLowerCase();
     if (!by.has(k)) by.set(k, { console: a.origin, game, recomps: [] });
     by.get(k).recomps.push(a.name || a.id);
@@ -6324,21 +6339,28 @@ function romIdentify(row) {
   const paths = row.copies.map((r) => r.path);
   const mine = row.copies.some((r) => (romGameOf(r) || {}).how === 'player');
   const consoles = uniq(games.map((g) => g.console)).sort((a, b) => conName(a).localeCompare(conName(b)));
-  const start = row.game ? row.game.console : S.romCon;
-  let con = consoles.includes(start) ? start : consoles[0];
+  // The row's console when it has one; a file of unknown console starts on Any, which searches
+  // every console's games ("" stands for Any).
+  const start = row.game ? row.game.console : romConsole(row.copies[0]);
+  let con = consoles.includes(start) ? start : '';
   let selected = row.game ? games.findIndex((g) => sameGame(g, row.game)) : -1;
-  const conOpts = consoles.map((c) => `<option value="${esc(c)}">${esc(conName(c))}</option>`).join('');
+  const onConsole = (g) => !con || g.console === con;
+  // A themed dropdown (drops.js dresses every select.sel) and a list of buttons for the games:
+  // WebKitGTK draws the system's own select and list box, light and hard to read on Linux.
+  const anyOpt = `<option value=""${con ? '' : ' selected'}>${esc(t('Any console'))}</option>`;
+  const conOpts = anyOpt + consoles.map((c) => `<option value="${esc(c)}" data-ico="c:${esc(c)}"${c === con ? ' selected' : ''}>${esc(conName(c))}</option>`).join('');
   const unpair = mine ? `<button type="button" class="btn" data-x="unpair">${esc(t('Unpair'))}</button>` : '<span></span>';
   const m = modal(`<h2>${esc(t('Which game is this?'))}</h2>
     <p>${esc(tf('Pick the game {name} is a copy of. Every recomp of that game can use it then. Nothing is copied or moved.', { name: row.title }))}</p>
-    <label class="mh-f"><span>${esc(t('Console'))}</span><select class="field" id="rid-con">${conOpts}</select></label>
+    <div class="mh-f"><span>${esc(t('Console'))}</span><select class="sel" id="rid-con" aria-label="${esc(t('Console'))}">${conOpts}</select></div>
     <label class="mh-f"><span>${esc(t('Search games'))}</span><input class="field" id="rid-q" type="search" autocomplete="off"></label>
-    <label class="mh-f"><span>${esc(t('Game'))}</span><select class="field project-options" id="rid-game" size="8"></select></label>
+    <div class="mh-f"><span>${esc(t('Game'))}</span><div class="rid-list" id="rid-game" role="listbox" aria-label="${esc(t('Game'))}"></div></div>
     <p class="muted" id="rid-note"></p>
     <p class="err" id="rid-err" hidden></p>
     <div class="acts" style="justify-content:space-between">${unpair}<span style="display:flex;gap:10px"><button type="button" class="btn" data-x="no">${esc(t('Cancel'))}</button><button type="button" class="btn main" data-x="yes">${esc(t('Save'))}</button></span></div>`,
   async (x, close) => {
     if (m.dataset.busy) return;
+    if (x.dataset.x === 'game') { selected = Number(x.dataset.i); return draw(); }
     if (x.dataset.x === 'yes' && selected >= 0) return save(close);
     if (x.dataset.x === 'unpair') return forget(close);
   }, t('Which game is this?'));
@@ -6352,9 +6374,11 @@ function romIdentify(row) {
   };
   const draw = () => {
     const q = $('#rid-q', m).value;
-    const shown = games.map((g, i) => [g, i]).filter(([g, i]) => g.console === con && (i === selected || sMatch(`${g.game} ${g.recomps.join(' ')}`, q)));
-    $('#rid-game', m).innerHTML = shown.map(([g, i]) => `<option value="${i}">${esc(g.game)}</option>`).join('');
-    $('#rid-game', m).value = String(selected);
+    const shown = games.map((g, i) => [g, i]).filter(([g, i]) => onConsole(g) && (i === selected || sMatch(`${g.game} ${g.recomps.join(' ')}`, q)));
+    // On Any, each game says its console: one name can be on several ("Majora's Mask" on N64 and 3DS).
+    const label = (g) => (con ? esc(g.game) : `${esc(g.game)}<small>${esc(conName(g.console))}</small>`);
+    const items = shown.map(([g, i]) => `<button type="button" class="rid-g" role="option" aria-selected="${i === selected}" data-x="game" data-i="${i}">${label(g)}</button>`).join('');
+    $('#rid-game', m).innerHTML = items || `<p class="rid-none">${esc(t('No game with that name on this console.'))}</p>`;
     update();
   };
   // After a change, the page and the matches follow: the recomps of a newly paired game go into
@@ -6381,10 +6405,8 @@ function romIdentify(row) {
     await refresh();
     toast(t('Unpaired. The launcher matches it on its own again.'));
   }
-  $('#rid-con', m).value = con;
-  $('#rid-con', m).addEventListener('change', (e) => { con = e.target.value; if (games[selected] && games[selected].console !== con) selected = -1; draw(); });
+  $('#rid-con', m).addEventListener('change', (e) => { con = e.target.value; if (games[selected] && !onConsole(games[selected])) selected = -1; draw(); });
   $('#rid-q', m).addEventListener('input', draw);
-  $('#rid-game', m).addEventListener('change', (e) => { selected = Number(e.target.value); update(); });
   draw();
   $('#rid-q', m).focus();
   return m;
@@ -8008,7 +8030,8 @@ async function act(el, e) {
     case 'rom-games': return setUpGamesRoms();
     case 'rom-id': { const row = (S.romRows || [])[Number(el.dataset.i)]; return row && romIdentify(row); }
     case 'rom-bug': return invoke('open_url', { url: romBugUrl() }).then(() => toast(t('The report is filled in. Say what happened, then submit it on the page.'))).catch(fail);
-    case 'rom-con': S.romCon = el.dataset.k; return render(true);
+    case 'rom-con': S.romCon = el.dataset.k; S.romConPicked = true; return render(true);
+    case 'rom-allcons': S.romAllCons = !S.romAllCons; return render(true);
     case 'rom-emus': return emuFolders();
     case 'found-fix': return fixFound(id);
     case 'copies': return copiesModal(id);
