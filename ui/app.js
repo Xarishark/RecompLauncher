@@ -6312,6 +6312,10 @@ function pageRoms() {
 // folders existed gets them now.
 async function enterRoms() {
   for (const d of (S.settings.rom_dirs || []).filter(isGamesRoms)) invoke('rom_console_folders', { path: d }).catch(() => {});
+  // Folders that were never looked through (added outside first setup, or a scan from before
+  // they had files): looked through once now, so the page doesn't open on nothing.
+  const neverScanned = (S.settings.rom_dirs || []).length && !(S.roms || []).length && !S.romsScannedHere;
+  if (neverScanned) { S.romsScannedHere = true; return scanRoms(); }
   if (!S.ownedOk) { await loadOwned(); if (S.view === 'roms') render(true); }
   await loadRomGames();
 }
@@ -8091,7 +8095,7 @@ document.addEventListener('click', (e) => {
   const link = e.target.closest('[data-url]:not([data-act])');
   if (link) { e.preventDefault(); invoke('open_url', { url: link.dataset.url }).catch(fail); return; }
   const g = e.target.closest('[data-go]');
-  if (g) { e.preventDefault(); if (['home', 'discover', 'soon', 'library', 'achievements', 'downloads', 'shots', 'saves', 'settings'].includes(g.dataset.go) || g.dataset.go.startsWith('plug:')) { if (g.closest('.side')) { if (g.dataset.go === 'discover') S.find.genre = ''; if (g.dataset.go === 'shots') S.shotsGame = ''; } go(g.dataset.go); } return; }
+  if (g) { e.preventDefault(); if (['home', 'discover', 'soon', 'library', 'achievements', 'downloads', 'shots', 'saves', 'roms', 'settings'].includes(g.dataset.go) || g.dataset.go.startsWith('plug:')) { if (g.closest('.side')) { if (g.dataset.go === 'discover') S.find.genre = ''; if (g.dataset.go === 'shots') S.shotsGame = ''; } go(g.dataset.go); } return; }
   const a = e.target.closest('[data-act]');
   if (a && a.tagName !== 'SELECT') { if (a.closest('.menu')) closeMenu(); act(a, e); }
 });
