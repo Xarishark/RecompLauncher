@@ -552,7 +552,12 @@ body.light .known-fix b{color:#127a45}
 .mod .acts{display:flex;gap:8px;flex:none}
 .card-h .field{max-width:260px;height:38px;padding:0 14px}
 /* ROM Manager: consoles on the left, the selected console's games on the right. */
-.rm-acts{display:flex;gap:10px;flex-wrap:wrap}
+.rm-acts{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+/* Beta above the title; Report a bug at the top right, the page's buttons under it. */
+.rm-head{align-items:stretch}
+.rm-beta{margin-bottom:10px}
+.rm-side{display:flex;flex-direction:column;align-items:flex-end;justify-content:space-between;gap:14px}
+.rm-bug{display:inline-flex;align-items:center;gap:7px}
 .rm-wrap{container-type:inline-size;container-name:rm}
 .romman{display:grid;grid-template-columns:minmax(220px,280px) minmax(0,1fr);gap:24px;align-items:start}
 .rm-cons{display:flex;flex-direction:column;gap:4px;position:sticky;top:20px;max-height:calc(100vh - 140px);overflow:auto;padding:6px;border-radius:16px;background:var(--card)}
@@ -580,6 +585,17 @@ body.light .known-fix b{color:#127a45}
 .rm-copy{display:inline-block;font:600 11.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--ink);background:rgba(52,242,232,.1);border:1px solid rgba(52,242,232,.28);border-radius:5px;padding:4px 6px;cursor:pointer}
 .rm-copy:hover{background:rgba(52,242,232,.2)}
 .rm-copy.extra{color:var(--muted);background:var(--fill);border-color:var(--line2)}
+/* Several copies: one pill, and the list of files on hover or focus (it stays open while the pointer is on it). */
+.rm-multi{position:relative;cursor:default;outline:none}
+.rm-multi:focus-visible{box-shadow:0 0 0 2px var(--cyan)}
+.rm-tip{display:none;position:absolute;left:0;top:100%;z-index:30;width:max-content;min-width:300px;max-width:min(560px,80vw);margin-top:6px;padding:6px;border-radius:12px;background:var(--card3);border:1px solid var(--line2);box-shadow:0 14px 34px rgba(0,0,0,.45);flex-direction:column;gap:2px}
+.rm-tip::before{content:"";position:absolute;left:0;right:0;top:-8px;height:8px}
+.rm-multi:hover .rm-tip,.rm-multi:focus-within .rm-tip{display:flex}
+.rm-tip-l{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:baseline;gap:10px;padding:7px 9px;border-radius:8px;text-align:left;font:500 12.5px Figtree,sans-serif;color:var(--muted)}
+.rm-tip-l:hover,.rm-tip-l:focus-visible{background:var(--card2);color:var(--ink)}
+.rm-tip-l b{font:600 11.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--ink);white-space:nowrap}
+.rm-tip-l span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rm-tip-l small{color:var(--dim);white-space:nowrap}
 body.light .rm-copy{background:rgba(20,120,130,.08);border-color:rgba(20,120,130,.3)}
 .rm-p{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .rm-pair{height:28px;padding:0 11px;border-radius:999px;font:600 12.5px Figtree,sans-serif;color:var(--cyan);background:color-mix(in srgb,var(--cyan) 14%,transparent)}

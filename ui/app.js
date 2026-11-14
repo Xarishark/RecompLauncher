@@ -6148,13 +6148,14 @@ const CONSOLE_ICONS = new Set(['n64', 'snes', 'nes', 'gb', 'gbc', 'gba', 'ds', '
 const conBadge = (id) => CONSOLE_ICONS.has(id) ? `<img class="con-img" src="img/consoles/${esc(id)}.svg" alt="" width="38" height="38" loading="lazy">` : `<span class="con-ic" style="--c:${CONSOLE_COLORS[id] || CONSOLE_COLORS.other}" aria-hidden="true">${id === 'unknown' ? '?' : esc((CONSOLE_INFO[id] || [])[0] || id.slice(0, 3).toUpperCase())}</span>`;
 // A file's console: what the scan read off it, or "unknown" when it could be one of two
 // ("xdvdfs" is Xbox or Xbox 360, "playstation" is PS1 or PS2) or nothing said.
-// A .nup holds a Switch or a Switch 2 game and the scan calls it Switch 2: kept in the switch folder,
-// it's shown with the Switch copies of its game.
+// A .nup holds a Switch or a Switch 2 game and the scan calls it Switch 2: kept in Games/ROMs/switch
+// (the launcher's own structure, not a folder of the player's named the same), it's shown with the
+// Switch copies of its game.
 // A file that's a copy of a known game sits with that game's console.
 function romConsole(r) {
   const g = romGameOf(r);
   if (g && g.console) return g.console;
-  if (/\.nup$/i.test(r.path) && /[\\/]switch[\\/]/i.test(r.path)) return 'switch';
+  if (/\.nup$/i.test(r.path) && /[\\/]Games[\\/]ROMs[\\/]switch[\\/]/i.test(r.path)) return 'switch';
   return r.system && r.system !== 'xdvdfs' && r.system !== 'playstation' ? r.system : 'unknown';
 }
 // The game a file is a copy of ({ console, game, how }), from the core's rom_games: "player" when
@@ -6205,16 +6206,52 @@ function romGames(list) {
 // One copy as a pill: its format (or Folder), and what sets it apart. It opens where the copy is.
 function romPill(r) {
   const part = romPart(r);
+  const tip = [r.path, r.size ? fmtB(r.size) : ''].filter(Boolean).join(' · ');
+  return `<button type="button" class="fmt rm-copy${part.kind === 'game' ? '' : ' extra'}" data-act="folder" data-path="${esc(romWhere(r))}" title="${esc(tip)}">${esc(romCopyLabel(r))}</button>`;
+}
+// A copy's format (or Folder) and what sets it apart: ".nsp · Update", ".iso · Disc 2 · Europe".
+function romCopyLabel(r) {
+  const part = romPart(r);
   const ext = r.size ? (baseName(r.path).match(/\.([a-z0-9]{2,5})$/i) || [, ''])[1].toLowerCase() : '';
   const bits = [ext ? '.' + ext : t('Folder')];
   if (part.kind === 'update') bits.push(t('Update'));
   if (part.kind === 'dlc') bits.push(t('DLC'));
   if (part.disc) bits.push(tf('Disc {n}', { n: part.disc }));
   if (r.region) bits.push(r.region);
-  // An extracted game is its folder (size 0); a file opens the folder it's in.
-  const where = r.size ? String(r.path).replace(/[\\/][^\\/]*$/, '') : r.path;
-  const tip = [r.path, r.size ? fmtB(r.size) : ''].filter(Boolean).join(' · ');
-  return `<button type="button" class="fmt rm-copy${part.kind === 'game' ? '' : ' extra'}" data-act="folder" data-path="${esc(where)}" title="${esc(tip)}">${bits.map(esc).join(' · ')}</button>`;
+  return bits.join(' · ');
+}
+// Where a copy opens: an extracted game is its folder (size 0), a file the folder it's in.
+const romWhere = (r) => (r.size ? String(r.path).replace(/[\\/][^\\/]*$/, '') : r.path);
+// A path short enough for a list: its last two parts ("…/xbox360/Lost Odyssey Disc 1.iso").
+const romShortPath = (p) => { const parts = String(p).split(/[\\/]/).filter(Boolean); return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : parts.join('/'); };
+// "Discs 1–4", "Discs 1, 2, 4" or "Disc 2", from the disc numbers the names give.
+function discRange(nums) {
+  if (nums.length === 1) return tf('Disc {n}', { n: nums[0] });
+  const inOrder = nums.every((n, i) => !i || n === nums[i - 1] + 1);
+  if (inOrder) return tf('Discs {from}–{to}', { from: nums[0], to: nums[nums.length - 1] });
+  return tf('Discs {list}', { list: nums.join(', ') });
+}
+// What a game's copies add up to: "Discs 1–4 · 1 update · 3 DLC", "4 copies · 1 update". Only what
+// the names say: nothing here claims a set is complete.
+function romSummary(copies) {
+  const parts = copies.map(romPart);
+  const discs = [...new Set(parts.filter((p) => p.kind === 'game' && p.disc).map((p) => p.disc))].sort((a, b) => a - b);
+  const plain = parts.filter((p) => p.kind === 'game' && !p.disc).length;
+  const updates = parts.filter((p) => p.kind === 'update').length;
+  const dlc = parts.filter((p) => p.kind === 'dlc').length;
+  const out = [];
+  if (discs.length) out.push(discRange(discs));
+  if (plain) out.push(discs.length ? tn(plain, '1 more copy', '{n} more copies') : tn(plain, '1 copy', '{n} copies'));
+  if (updates) out.push(tn(updates, '1 update', '{n} updates'));
+  if (dlc) out.push(tn(dlc, '1 DLC', '{n} DLC'));
+  return out.join(' · ');
+}
+// A game's copies: one copy is its pill. Several are one pill that adds them up, with the list on
+// hover or focus: a line per file or folder, each opening where it is.
+function romCopies(copies) {
+  if (copies.length === 1) return romPill(copies[0]);
+  const lines = copies.map((r) => `<button type="button" class="rm-tip-l" data-act="folder" data-path="${esc(romWhere(r))}" title="${esc(r.path)}"><b>${esc(romCopyLabel(r))}</b><span>${esc(romShortPath(r.path))}</span>${r.size ? `<small>${esc(fmtB(r.size))}</small>` : ''}</button>`).join('');
+  return `<span class="fmt rm-copy rm-multi" tabindex="0">${esc(romSummary(copies))}<span class="rm-tip" role="tooltip">${lines}</span></span>`;
 }
 
 function pageRoms() {
@@ -6230,8 +6267,10 @@ function pageRoms() {
   if (!all.includes(S.romCon)) S.romCon = all.find((k) => counts[k]) || all[0] || '';
   const cur = S.romCon;
   const setup = dirs.some(isGamesRoms) ? '' : `<button type="button" class="btn main" data-act="rom-games" title="${esc(t('A folder for each console in Games/ROMs. Put your ROMs and disc images in their console\'s folder.'))}">${esc(t('Set Up Games/ROMs'))}</button>`;
-  const head = `<div class="head"><div><h1>${esc(t('ROM Manager'))}</h1><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div>
-    <div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan">${esc(t('Look again'))}</button>` : ''}</div></div>`;
+  // It's a beta: said above the title, with a way to tell us what went wrong at the top right.
+  const bug = `<button type="button" class="btn sm rm-bug" data-act="rom-bug" title="${esc(t('Opens a new issue on RecompLauncher\'s GitHub, filled in with your launcher version and system'))}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7.5V6a3 3 0 0 1 6 0v1.5"/><rect x="7" y="7.5" width="10" height="12" rx="5"/><path d="M12 11v8.5M4 13h3M17 13h3M5 8.5l2.5 1.5M19 8.5 16.5 10M5 18.5l2.5-1.5M19 18.5 16.5 17"/></svg>${esc(t('Report a bug'))}</button>`;
+  const head = `<div class="head rm-head"><div><span class="bh-tag rm-beta">${esc(t('Beta'))}</span><h1>${esc(t('ROM Manager'))}</h1><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div>
+    <div class="rm-side">${bug}<div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan">${esc(t('Look again'))}</button>` : ''}</div></div></div>`;
   if (!dirs.length) return `<div class="page">${head}<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg><h2>${esc(t('No ROM folders yet'))}</h2><p>${esc(t('Set up Games/ROMs and put each game in its console\'s folder, or add a folder you already have.'))}</p></div></div>`;
   const cons = all.map((k) => `<button type="button" class="rm-con${k === cur ? ' on' : ''}${counts[k] ? '' : ' none'}" data-act="rom-con" data-k="${esc(k)}" aria-pressed="${k === cur}">${conBadge(k)}<span class="nm">${esc(conName(k))}</span><b class="n">${counts[k] ? fmtNum(counts[k]) : ''}</b></button>`).join('');
   const list = romGames(roms.filter((r) => romConsole(r) === cur));
@@ -6244,7 +6283,7 @@ function pageRoms() {
     // How the game was told, when it wasn't by the file itself: the player's word, or its name only.
     const hows = copies.map((r) => (romGameOf(r) || {}).how);
     const how = hows.includes('player') ? t('Paired by you') : g.game && !hows.includes('matched') ? t('Matched by name') : '';
-    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</b><span class="rm-copies">${copies.map(romPill).join('')}</span></div><div class="rm-p">${paired}</div></div>`;
+    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</b><span class="rm-copies">${romCopies(copies)}</span></div><div class="rm-p">${paired}</div></div>`;
   }).join('');
   const empty = `<div class="empty rm-empty"><p>${esc(tf('No {console} games found yet.', { console: conName(cur) }))}</p></div>`;
   return `<div class="page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
@@ -6256,6 +6295,18 @@ async function enterRoms() {
   for (const d of (S.settings.rom_dirs || []).filter(isGamesRoms)) invoke('rom_console_folders', { path: d }).catch(() => {});
   if (!S.ownedOk) { await loadOwned(); if (S.view === 'roms') render(true); }
   await loadRomGames();
+}
+// A new issue on RecompLauncher's GitHub about the ROM Manager, filled in with the launcher's
+// version, the system and what the page shows. No file names or paths: those are the player's.
+function romBugUrl() {
+  const roms = S.roms || [];
+  const con = S.romCon ? conName(S.romCon) : '';
+  const onCon = roms.filter((r) => romConsole(r) === S.romCon).length;
+  const body = ['**What happened:** ', '', '**What you expected:** ', '',
+    `- RecompLauncher: ${S.version}`, `- System: ${OS_NAME[S.os] || S.os}${S.flatpak ? ' (Flatpak)' : ''}${S.arch ? ` (${S.arch})` : ''}`,
+    `- ROM folders: ${(S.settings.rom_dirs || []).length}, files found: ${roms.length}`,
+    ...(con ? [`- Console open: ${con} (${onCon} files)`] : [])].join('\n');
+  return `https://github.com/elripalda/RecompLauncher/issues/new?title=${encodeURIComponent('ROM Manager: ')}&body=${encodeURIComponent(body)}`;
 }
 async function setUpGamesRoms() {
   const p = await invoke('games_rom_folder').catch(fail);
@@ -7861,6 +7912,7 @@ async function act(el, e) {
     case 'rom-remove': await saveSettings({ rom_dirs: (S.settings.rom_dirs || []).filter((d) => d !== el.dataset.path) }); return scanRoms();
     case 'rom-scan': return scanRoms();
     case 'rom-games': return setUpGamesRoms();
+    case 'rom-bug': return invoke('open_url', { url: romBugUrl() }).then(() => toast(t('The report is filled in. Say what happened, then submit it on the page.'))).catch(fail);
     case 'rom-con': S.romCon = el.dataset.k; return render(true);
     case 'rom-emus': return emuFolders();
     case 'found-fix': return fixFound(id);
