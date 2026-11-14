@@ -4073,7 +4073,7 @@ function render(keepScroll) {
   // A plugin's page keeps running while the rest of the window is redrawn.
   if (v.startsWith('plug:') && !S.anim && main.dataset.v === v) { renderSide(); paintIsland(); $('#offline').hidden = !offNow(); return; }
   if (keepScroll && v === 'game' && !S.anim && gp && gp.dataset.gp === S.arg) { refreshGame(); renderSide(); paintIsland(); $('#offline').hidden = !offNow(); fitTitles(main); return; }
-  const html = v === 'discover' ? pageDiscover() : v === 'library' ? pageLibrary() : v === 'achievements' ? pageAchievements() : v === 'game' ? pageGame(S.arg) : v === 'downloads' ? pageDownloads() : v === 'settings' ? pageSettings() : v === 'shots' ? pageShots() : v === 'soon' ? pageSoon() : v === 'saves' && window.pageSaves ? window.pageSaves() : v.startsWith('plug:') && window.pagePlugin ? window.pagePlugin(v.slice(5)) : pageHome();
+  const html = v === 'discover' ? pageDiscover() : v === 'library' ? pageLibrary() : v === 'achievements' ? pageAchievements() : v === 'game' ? pageGame(S.arg) : v === 'downloads' ? pageDownloads() : v === 'settings' ? pageSettings() : v === 'shots' ? pageShots() : v === 'roms' ? pageRoms() : v === 'soon' ? pageSoon() : v === 'saves' && window.pageSaves ? window.pageSaves() : v.startsWith('plug:') && window.pagePlugin ? window.pagePlugin(v.slice(5)) : pageHome();
   // Going to a page draws it fresh, with its entrance. Anything else (the same page with new
   // data) is patched in place, so nothing on screen flickers.
   // Redrawing the same page: whatever was at the top of the view stays there, even when something
@@ -4479,6 +4479,7 @@ function toggleSide() {
 function go(view, arg, fromEl) {
   if (view === 'settings') { loadLibs(); loadPads(); }
   if (view === 'shots') loadAllShots();
+  if (view === 'roms') enterRoms();
   if (view === 'saves' && window.loadSavesAll) window.loadSavesAll();
   if (view === S.view && arg === S.arg) { if (view === 'game' && S.nextTab) { S.tab = S.nextTab; S.nextTab = null; } return render(true); }
   S.back.push({ view: S.view, arg: S.arg, tab: S.tab, scroll: $('#main').scrollTop });
@@ -6131,6 +6132,71 @@ function pageShots() {
   </div>`;
 }
 
+// ---------- ROM Manager ----------
+// ~/Games/ROMs (or any folder named that way), the one the launcher sets up with a folder per console.
+const isGamesRoms = (d) => /[\\/]Games[\\/]ROMs[\\/]?$/i.test(String(d || ''));
+// Each console's badge text and its name for when the catalog hasn't loaded (offline).
+const CONSOLE_INFO = { n64: ['N64', 'Nintendo 64'], snes: ['SNES', 'Super Nintendo'], nes: ['NES', 'NES'], gb: ['GB', 'Game Boy'], gbc: ['GBC', 'Game Boy Color'],
+  gba: ['GBA', 'Game Boy Advance'], ds: ['DS', 'Nintendo DS'], '3ds': ['3DS', 'Nintendo 3DS'], vb: ['VB', 'Virtual Boy'], gc: ['GC', 'GameCube'], wii: ['Wii', 'Wii'],
+  wiiu: ['WiiU', 'Wii U'], switch: ['NSW', 'Switch'], switch2: ['NS2', 'Switch 2'], ps1: ['PS1', 'PlayStation'], ps2: ['PS2', 'PlayStation 2'], ps3: ['PS3', 'PlayStation 3'],
+  ps4: ['PS4', 'PlayStation 4'], ps5: ['PS5', 'PlayStation 5'], psp: ['PSP', 'PSP'], xbox: ['XB', 'Xbox'], x360: ['360', 'Xbox 360'], genesis: ['MD', 'Genesis'],
+  s32x: ['32X', '32X'], gg: ['GG', 'Game Gear'], sms: ['SMS', 'Master System'], saturn: ['SAT', 'Saturn'], dc: ['DC', 'Dreamcast'], amiga: ['AMI', 'Amiga'],
+  arcade: ['ARC', 'Arcade'], cdi: ['CDi', 'CD-i'] };
+const conName = (id) => (id === 'unknown' ? t('Not identified') : ((S.cat && S.cat.origins) || []).some((o) => o.id === id) ? originName(id) : (CONSOLE_INFO[id] || [])[1] || id);
+// Consoles with a picture in img/consoles (the MilkToastRat Pack, CC0). The rest keep a badge in their colour.
+const CONSOLE_ICONS = new Set(['n64', 'snes', 'nes', 'gb', 'gbc', 'gba', 'ds', '3ds', 'gc', 'wii', 'wiiu', 'switch', 'switch2', 'ps1', 'ps2', 'ps3', 'ps4', 'ps5', 'psp', 'xbox', 'x360', 'amiga']);
+const conBadge = (id) => CONSOLE_ICONS.has(id) ? `<img class="con-img" src="img/consoles/${esc(id)}.svg" alt="" width="38" height="38" loading="lazy">` : `<span class="con-ic" style="--c:${CONSOLE_COLORS[id] || CONSOLE_COLORS.other}" aria-hidden="true">${id === 'unknown' ? '?' : esc((CONSOLE_INFO[id] || [])[0] || id.slice(0, 3).toUpperCase())}</span>`;
+// A file's console: what the scan read off it, or "unknown" when it could be one of two
+// ("xdvdfs" is Xbox or Xbox 360, "playstation" is PS1 or PS2) or nothing said.
+const romConsole = (r) => (r.system && r.system !== 'xdvdfs' && r.system !== 'playstation' ? r.system : 'unknown');
+// The recomps the launcher paired with this file.
+const romRecomps = (r) => Object.entries(S.owned || {}).filter(([, f]) => f && f.path === r.path).map(([id]) => byId(id) || { id, name: id });
+
+function pageRoms() {
+  const roms = S.roms || [], dirs = S.settings.rom_dirs || [];
+  const counts = {};
+  for (const r of roms) { const c = romConsole(r); counts[c] = (counts[c] || 0) + 1; }
+  // Every console recomps come from and every one a file was found for: the ones with files first.
+  const all = uniq([...((S.cat && S.cat.origins) || []).map((o) => o.id), ...Object.keys(counts)]).filter((k) => k !== 'unknown' && k !== 'other');
+  all.sort((a, b) => (counts[b] ? 1 : 0) - (counts[a] ? 1 : 0) || conName(a).localeCompare(conName(b)));
+  if (counts.unknown) all.push('unknown');
+  if (!all.includes(S.romCon)) S.romCon = all.find((k) => counts[k]) || all[0] || '';
+  const cur = S.romCon;
+  const setup = dirs.some(isGamesRoms) ? '' : `<button type="button" class="btn main" data-act="rom-games" title="${esc(t('A folder for each console in Games/ROMs. Put your ROMs and disc images in their console\'s folder.'))}">${esc(t('Set Up Games/ROMs'))}</button>`;
+  const head = `<div class="head"><div><h1>${esc(t('ROM Manager'))}</h1><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div>
+    <div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan">${esc(t('Look again'))}</button>` : ''}</div></div>`;
+  if (!dirs.length) return `<div class="page">${head}<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg><h2>${esc(t('No ROM folders yet'))}</h2><p>${esc(t('Set up Games/ROMs and put each game in its console\'s folder, or add a folder you already have.'))}</p></div></div>`;
+  const cons = all.map((k) => `<button type="button" class="rm-con${k === cur ? ' on' : ''}${counts[k] ? '' : ' none'}" data-act="rom-con" data-k="${esc(k)}" aria-pressed="${k === cur}">${conBadge(k)}<span class="nm">${esc(conName(k))}</span><b class="n">${counts[k] ? fmtNum(counts[k]) : ''}</b></button>`).join('');
+  const list = roms.filter((r) => romConsole(r) === cur).sort((a, b) => String(a.title).localeCompare(String(b.title)));
+  const note = cur === 'unknown' ? `<p class="rm-note">${esc(t('The launcher couldn\'t tell which console these are for. Put them in their console\'s folder and look again.'))}</p>` : '';
+  const rows = list.map((r) => {
+    const recs = romRecomps(r);
+    const paired = recs.length ? recs.map((a) => `<button type="button" class="rm-pair" data-act="open" data-id="${esc(a.id)}">${esc(a.name)}</button>`).join('') : `<span class="rm-none">${esc(t('No recomp found'))}</span>`;
+    // An extracted game is its folder (size 0); a file opens the folder it's in.
+    const where = r.size ? String(r.path).replace(/[\\/][^\\/]*$/, '') : r.path;
+    const meta = [baseName(r.path), r.region, r.size ? fmtB(r.size) : t('Folder')].filter(Boolean).map(esc).join(' · ');
+    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(r.title)}">${esc(r.title)}</b><small title="${esc(r.path)}">${meta}</small></div><div class="rm-p">${paired}</div>
+      <button type="button" class="icon-btn" data-act="folder" data-path="${esc(where)}" aria-label="${esc(t('Show in folder'))}" title="${esc(t('Show in folder'))}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${MI.folder}</svg></button></div>`;
+  }).join('');
+  const empty = `<div class="empty rm-empty"><p>${esc(tf('No {console} games found yet.', { console: conName(cur) }))}</p></div>`;
+  return `<div class="page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
+    <section class="rm-list" aria-label="${esc(conName(cur))}"><div class="rm-h">${conBadge(cur)}<h2>${esc(conName(cur))}</h2><span>${esc(tn(list.length, '1 game', '{n} games'))}</span></div>${note}${rows || empty}</section></div></div></div>`;
+}
+// The ROM Manager opens: matches are loaded once, and a Games/ROMs set up before the console
+// folders existed gets them now.
+async function enterRoms() {
+  for (const d of (S.settings.rom_dirs || []).filter(isGamesRoms)) invoke('rom_console_folders', { path: d }).catch(() => {});
+  if (!S.ownedOk) { await loadOwned(); if (S.view === 'roms') render(true); }
+}
+async function setUpGamesRoms() {
+  const p = await invoke('games_rom_folder').catch(fail);
+  if (!p) return;
+  await saveSettings({ rom_dirs: uniq([...(S.settings.rom_dirs || []), p]) });
+  toast(t('Games/ROMs is ready, with a folder for each console.'));
+  invoke('open_folder', { id: null, path: p }).catch(() => {});
+  return scanRoms();
+}
+
 // A big view of one screenshot, with arrows to the others and Share, Show in folder and Delete.
 let viewerClose = null;
 function viewShot(i, list = shotList()) {
@@ -7723,6 +7789,8 @@ async function act(el, e) {
     }
     case 'rom-remove': await saveSettings({ rom_dirs: (S.settings.rom_dirs || []).filter((d) => d !== el.dataset.path) }); return scanRoms();
     case 'rom-scan': return scanRoms();
+    case 'rom-games': return setUpGamesRoms();
+    case 'rom-con': S.romCon = el.dataset.k; return render(true);
     case 'rom-emus': return emuFolders();
     case 'found-fix': return fixFound(id);
     case 'copies': return copiesModal(id);
