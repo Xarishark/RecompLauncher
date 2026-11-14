@@ -6246,6 +6246,27 @@ function romSummary(copies) {
   if (dlc) out.push(tn(dlc, '1 DLC', '{n} DLC'));
   return out.join(' · ');
 }
+// The list of a game's copies, under its pill, or above it when there's no room below. It's
+// position: fixed so the scrolling list doesn't cut it off; its containing block may be a parent
+// with containment (the page's container query), so it's placed relative to where (0, 0) lands.
+function placeRomTip(pill) {
+  const tip = pill.querySelector('.rm-tip');
+  if (!tip) return;
+  tip.style.left = '0px';
+  tip.style.top = '0px';
+  const origin = tip.getBoundingClientRect();
+  // Not shown yet (the hover style lands a frame later): placed once it is.
+  if (!origin.width) { requestAnimationFrame(() => { if (pill.matches(':hover, :focus-within')) placeRomTip(pill); }); return; }
+  const r = pill.getBoundingClientRect();
+  const up = r.bottom + 6 + origin.height > innerHeight - 8 && r.top - 6 - origin.height > 8;
+  const y = up ? r.top - 6 - origin.height : r.bottom + 6;
+  const x = Math.max(8, Math.min(r.left, innerWidth - origin.width - 8));
+  tip.classList.toggle('up', up);
+  tip.style.left = `${x - origin.left}px`;
+  tip.style.top = `${y - origin.top}px`;
+}
+document.addEventListener('mouseover', (e) => { const p = e.target.closest && e.target.closest('.rm-multi'); if (p && !p.contains(e.relatedTarget)) placeRomTip(p); });
+document.addEventListener('focusin', (e) => { const p = e.target.closest && e.target.closest('.rm-multi'); if (p) placeRomTip(p); });
 // A game's copies: one copy is its pill. Several are one pill that adds them up, with the list on
 // hover or focus: a line per file or folder, each opening where it is.
 function romCopies(copies) {
@@ -6305,8 +6326,8 @@ function pageRoms() {
     return `<div class="rm-rom"><div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</b><span class="rm-copies">${romCopies(copies)}</span></div><div class="rm-p">${paired}</div>${idBtn}</div>`;
   }).join('');
   const empty = `<div class="empty rm-empty"><p>${esc(tf('No {console} games found yet.', { console: conName(cur) }))}</p></div>`;
-  return `<div class="page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
-    <section class="rm-list" aria-label="${esc(conName(cur))}"><div class="rm-h">${conBadge(cur)}<h2>${esc(conName(cur))}</h2><span>${esc(tn(list.length, '1 game', '{n} games'))}</span></div>${note}${rows || empty}</section></div></div></div>`;
+  return `<div class="page rm-page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
+    <section class="rm-list" aria-label="${esc(conName(cur))}"><div class="rm-h">${conBadge(cur)}<h2>${esc(conName(cur))}</h2><span>${esc(tn(list.length, '1 game', '{n} games'))}</span></div><div class="rm-rows">${note}${rows || empty}</div></section></div></div></div>`;
 }
 // The ROM Manager opens: matches are loaded once, and a Games/ROMs set up before the console
 // folders existed gets them now.
