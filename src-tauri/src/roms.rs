@@ -357,6 +357,24 @@ pub fn copy_ids(app: &Value) -> Vec<String> {
     list.into_iter().map(id_key).filter(|k| k.len() >= 3).collect()
 }
 
+/// The folder each console's games go in, inside a ROM folder the launcher sets up (~/Games/ROMs).
+/// The names are the ones ES-DE and EmuDeck use, so a player who has those already shares one tree.
+pub const CONSOLE_FOLDERS: [(&str, &str); 30] = [
+    ("n64", "n64"), ("snes", "snes"), ("nes", "nes"), ("gb", "gb"), ("gbc", "gbc"), ("gba", "gba"),
+    ("ds", "nds"), ("3ds", "n3ds"), ("vb", "virtualboy"), ("gc", "gc"), ("wii", "wii"), ("wiiu", "wiiu"),
+    ("switch", "switch"), ("switch2", "switch2"), ("ps1", "psx"), ("ps2", "ps2"), ("ps3", "ps3"), ("ps4", "ps4"),
+    ("ps5", "ps5"), ("psp", "psp"), ("xbox", "xbox"), ("x360", "xbox360"), ("genesis", "genesis"), ("s32x", "sega32x"),
+    ("gg", "gamegear"), ("sms", "mastersystem"), ("saturn", "saturn"), ("dc", "dreamcast"), ("amiga", "amiga"), ("arcade", "arcade"),
+];
+
+/// A folder for each console inside `root`. Ones already there are left as they are.
+pub fn make_console_folders(root: &Path) -> std::io::Result<()> {
+    for (_, folder) in CONSOLE_FOLDERS {
+        fs::create_dir_all(root.join(folder))?;
+    }
+    Ok(())
+}
+
 /// The console a folder the file sits in is named for ("PS2", "Sony - PlayStation 2", "xbox"): the
 /// nearest such folder. "" when none is.
 pub fn folder_kind(p: &Path) -> &'static str {
@@ -375,6 +393,10 @@ pub fn folder_kind(p: &Path) -> &'static str {
     };
     for dir in p.ancestors().skip(1) {
         let Some(n) = dir.file_name().and_then(|n| n.to_str()) else { continue };
+        // The launcher's own console folders ("saturn", "n3ds") say it exactly.
+        if let Some((kind, _)) = CONSOLE_FOLDERS.iter().find(|(_, folder)| n.eq_ignore_ascii_case(folder)) {
+            return kind;
+        }
         let n = n.to_lowercase().replace(['_', '-'], " ");
         if let Some((_, k)) = WORDS.iter().find(|(w, _)| word(&n, w)) {
             return *k;
@@ -1136,6 +1158,38 @@ mod tests {
         assert!(fits(&r("E:/Black.iso", "xdvdfs"), "xbox"));
         assert!(!fits(&r("E:/Black.iso", "xdvdfs"), "ps2"));
         assert!(fits(&r("E:/Black.iso", ""), "xbox"));
+    }
+
+    #[test]
+    fn the_launchers_console_folders_name_their_console() {
+        assert_eq!(folder_kind(Path::new("/home/me/Games/ROMs/saturn/Baroque (Japan).chd")), "saturn");
+        assert_eq!(folder_kind(Path::new("/home/me/Games/ROMs/n3ds/Game.cia")), "3ds");
+        assert_eq!(folder_kind(Path::new("/home/me/Games/ROMs/xbox360/Black/Black.iso")), "x360");
+    }
+
+    #[test]
+    fn makes_a_folder_for_each_console() {
+        let d = tmp("console-folders");
+        make_console_folders(&d).unwrap();
+        for (_, folder) in CONSOLE_FOLDERS {
+            assert!(d.join(folder).is_dir(), "{folder}");
+        }
+        // A second time leaves what's there alone.
+        std::fs::write(d.join("psx/Driver.cue"), b"x").unwrap();
+        make_console_folders(&d).unwrap();
+        assert!(d.join("psx/Driver.cue").is_file());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_disc_image_in_a_console_folder_is_that_consoles() {
+        let d = tmp("console-disc");
+        std::fs::create_dir_all(d.join("saturn")).unwrap();
+        let chd = d.join("saturn/Baroque (Japan).chd");
+        std::fs::write(&chd, b"MComprHD").unwrap();
+        let rom = identify(&chd, 60 * 1024 * 1024).unwrap();
+        assert_eq!(rom.system, "saturn");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -8136,13 +8136,25 @@ fn emulator_folders(st: State<'_, App>) -> Vec<emus::Found> {
     emus::find().into_iter().filter(|f| !have.iter().any(|h| emus::within(&f.path, h))).collect()
 }
 
-/// ~/Games/ROMs, made if it isn't there: a ROM folder the Flatpak reads directly (its sandbox
-/// allows ~/Games), without the system's picker.
+/// ~/Games/ROMs, made if it isn't there, on every system: a ROM folder that needs no picker (the
+/// Flatpak reads it directly, as its sandbox allows ~/Games). It gets a folder for each console, so
+/// the player knows where each game goes and the launcher knows the console of a file that doesn't say.
 #[tauri::command(async)]
 fn games_rom_folder() -> Res<String> {
     let dir = dirs::home_dir().ok_or_else(|| Error::Msg("Couldn't find your home folder.".into()))?.join("Games/ROMs");
-    std::fs::create_dir_all(&dir).map_err(|_| Error::Msg("Couldn't create the ROMs folder in Games.".into()))?;
+    roms::make_console_folders(&dir).map_err(|_| Error::Msg("Couldn't create the ROMs folder in Games.".into()))?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+/// The console folders inside one of the player's ROM folders (one set up before they existed).
+/// Only a folder already in the list: this never makes folders anywhere else.
+#[tauri::command(async)]
+fn rom_console_folders(st: State<'_, App>, path: String) -> Res<()> {
+    let p = PathBuf::from(path);
+    if !st.lib.lock().unwrap().settings.rom_dirs.contains(&p) {
+        return Err(Error::Msg("That isn't one of your ROM folders.".into()));
+    }
+    roms::make_console_folders(&p).map_err(|_| Error::Msg("Couldn't create the console folders.".into()))
 }
 
 /// For the page as it starts: a game a link asked for before it was ready, once.
@@ -8777,6 +8789,7 @@ pub fn run() {
             precheck_copy,
             emulator_folders,
             games_rom_folder,
+            rom_console_folders,
             add_github,
             github_lookup,
             github_art,
