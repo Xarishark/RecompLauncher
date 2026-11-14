@@ -6148,14 +6148,62 @@ const CONSOLE_ICONS = new Set(['n64', 'snes', 'nes', 'gb', 'gbc', 'gba', 'ds', '
 const conBadge = (id) => CONSOLE_ICONS.has(id) ? `<img class="con-img" src="img/consoles/${esc(id)}.svg" alt="" width="38" height="38" loading="lazy">` : `<span class="con-ic" style="--c:${CONSOLE_COLORS[id] || CONSOLE_COLORS.other}" aria-hidden="true">${id === 'unknown' ? '?' : esc((CONSOLE_INFO[id] || [])[0] || id.slice(0, 3).toUpperCase())}</span>`;
 // A file's console: what the scan read off it, or "unknown" when it could be one of two
 // ("xdvdfs" is Xbox or Xbox 360, "playstation" is PS1 or PS2) or nothing said.
-const romConsole = (r) => (r.system && r.system !== 'xdvdfs' && r.system !== 'playstation' ? r.system : 'unknown');
+// A .nup holds a Switch or a Switch 2 game and the scan calls it Switch 2: kept in the switch folder,
+// it's shown with the Switch copies of its game.
+function romConsole(r) {
+  if (/\.nup$/i.test(r.path) && /[\\/]switch[\\/]/i.test(r.path)) return 'switch';
+  return r.system && r.system !== 'xdvdfs' && r.system !== 'playstation' ? r.system : 'unknown';
+}
 // The recomps the launcher paired with this file.
 const romRecomps = (r) => Object.entries(S.owned || {}).filter(([, f]) => f && f.path === r.path).map(([id]) => byId(id) || { id, name: id });
+// What a copy is to its game, from its name (like roms::part_of): an update, extra content, a disc
+// of a set, or the game. A Switch title ID ending in 800 is an update, another non-zero end is DLC.
+function romPart(r) {
+  const name = baseName(r.path).toLowerCase();
+  const tid = name.match(/(?:^|[^0-9a-f])01[0-9a-f]{14}(?![0-9a-f])/);
+  const end = tid ? tid[0].slice(-3) : '';
+  const disc = name.match(/(?:^|[^a-z0-9])(?:disc|disk|cd)[ _-]*(\d+)/);
+  if (end === '800' || (!tid && /(^|[^a-z])(upd|update|patch)([^a-z]|$)|title update|^tu_/.test(name))) return { kind: 'update' };
+  if ((end && end !== '000') || (!tid && /(^|[^a-z])(dlc|addon)([^a-z]|$)|add-on/.test(name))) return { kind: 'dlc' };
+  return { kind: 'game', disc: disc ? Number(disc[1]) : 0 };
+}
+// A game's name with what tells its copies apart taken out (region and dump tags, update, DLC and
+// disc words, versions), so every copy of one game lands on one row.
+const ROM_NOISE = new Set(['the', 'of', 'a', 'and', 'usa', 'us', 'europe', 'rev', 'update', 'upd', 'patch', 'dlc', 'disc', 'disk', 'cd']);
+function romGameKey(r) {
+  const plain = String(r.title || '').toLowerCase().replace(/[’']/g, '').replace(/\([^)]*\)|\[[^\]]*\]/g, ' ');
+  const words = plain.split(/[^a-z0-9]+/).filter((w) => w && !ROM_NOISE.has(w) && !/^v\d+$/.test(w) && !/^\d$/.test(w));
+  return words.join(' ') || String(r.path);
+}
+// The name a row shows: the game's copy with the fewest tags, without them.
+const romShownTitle = (copies) => copies.map((r) => String(r.title || '').replace(/\s*(\([^)]*\)|\[[^\]]*\])/g, '').trim()).filter(Boolean).sort((a, b) => a.length - b.length)[0] || baseName(copies[0].path);
+// The copies of each game on a console, one entry per game.
+function romGames(list) {
+  const by = new Map();
+  for (const r of list) { const k = romGameKey(r); if (!by.has(k)) by.set(k, []); by.get(k).push(r); }
+  return [...by.values()].map((copies) => ({ title: romShownTitle(copies), copies })).sort((a, b) => a.title.localeCompare(b.title));
+}
+// One copy as a pill: its format (or Folder), and what sets it apart. It opens where the copy is.
+function romPill(r) {
+  const part = romPart(r);
+  const ext = r.size ? (baseName(r.path).match(/\.([a-z0-9]{2,5})$/i) || [, ''])[1].toLowerCase() : '';
+  const bits = [ext ? '.' + ext : t('Folder')];
+  if (part.kind === 'update') bits.push(t('Update'));
+  if (part.kind === 'dlc') bits.push(t('DLC'));
+  if (part.disc) bits.push(tf('Disc {n}', { n: part.disc }));
+  if (r.region) bits.push(r.region);
+  // An extracted game is its folder (size 0); a file opens the folder it's in.
+  const where = r.size ? String(r.path).replace(/[\\/][^\\/]*$/, '') : r.path;
+  const tip = [r.path, r.size ? fmtB(r.size) : ''].filter(Boolean).join(' · ');
+  return `<button type="button" class="fmt rm-copy${part.kind === 'game' ? '' : ' extra'}" data-act="folder" data-path="${esc(where)}" title="${esc(tip)}">${bits.map(esc).join(' · ')}</button>`;
+}
 
 function pageRoms() {
   const roms = S.roms || [], dirs = S.settings.rom_dirs || [];
-  const counts = {};
-  for (const r of roms) { const c = romConsole(r); counts[c] = (counts[c] || 0) + 1; }
+  // Counted in games, not files: a game kept as .nsp and .xci is one.
+  const keys = {};
+  for (const r of roms) { const c = romConsole(r); (keys[c] = keys[c] || new Set()).add(romGameKey(r)); }
+  const counts = Object.fromEntries(Object.entries(keys).map(([c, s]) => [c, s.size]));
   // Every console recomps come from and every one a file was found for: the ones with files first.
   const all = uniq([...((S.cat && S.cat.origins) || []).map((o) => o.id), ...Object.keys(counts)]).filter((k) => k !== 'unknown' && k !== 'other');
   all.sort((a, b) => (counts[b] ? 1 : 0) - (counts[a] ? 1 : 0) || conName(a).localeCompare(conName(b)));
@@ -6167,16 +6215,14 @@ function pageRoms() {
     <div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan">${esc(t('Look again'))}</button>` : ''}</div></div>`;
   if (!dirs.length) return `<div class="page">${head}<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg><h2>${esc(t('No ROM folders yet'))}</h2><p>${esc(t('Set up Games/ROMs and put each game in its console\'s folder, or add a folder you already have.'))}</p></div></div>`;
   const cons = all.map((k) => `<button type="button" class="rm-con${k === cur ? ' on' : ''}${counts[k] ? '' : ' none'}" data-act="rom-con" data-k="${esc(k)}" aria-pressed="${k === cur}">${conBadge(k)}<span class="nm">${esc(conName(k))}</span><b class="n">${counts[k] ? fmtNum(counts[k]) : ''}</b></button>`).join('');
-  const list = roms.filter((r) => romConsole(r) === cur).sort((a, b) => String(a.title).localeCompare(String(b.title)));
+  const list = romGames(roms.filter((r) => romConsole(r) === cur));
   const note = cur === 'unknown' ? `<p class="rm-note">${esc(t('The launcher couldn\'t tell which console these are for. Put them in their console\'s folder and look again.'))}</p>` : '';
-  const rows = list.map((r) => {
-    const recs = romRecomps(r);
+  const rows = list.map((g) => {
+    // The game first, then its updates and DLC.
+    const copies = g.copies.slice().sort((a, b) => (romPart(a).kind !== 'game') - (romPart(b).kind !== 'game') || (romPart(a).disc || 0) - (romPart(b).disc || 0));
+    const recs = uniq(copies.flatMap(romRecomps).map((a) => a.id)).map((id) => byId(id) || { id, name: id });
     const paired = recs.length ? recs.map((a) => `<button type="button" class="rm-pair" data-act="open" data-id="${esc(a.id)}">${esc(a.name)}</button>`).join('') : `<span class="rm-none">${esc(t('No recomp found'))}</span>`;
-    // An extracted game is its folder (size 0); a file opens the folder it's in.
-    const where = r.size ? String(r.path).replace(/[\\/][^\\/]*$/, '') : r.path;
-    const meta = [baseName(r.path), r.region, r.size ? fmtB(r.size) : t('Folder')].filter(Boolean).map(esc).join(' · ');
-    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(r.title)}">${esc(r.title)}</b><small title="${esc(r.path)}">${meta}</small></div><div class="rm-p">${paired}</div>
-      <button type="button" class="icon-btn" data-act="folder" data-path="${esc(where)}" aria-label="${esc(t('Show in folder'))}" title="${esc(t('Show in folder'))}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${MI.folder}</svg></button></div>`;
+    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}</b><span class="rm-copies">${copies.map(romPill).join('')}</span></div><div class="rm-p">${paired}</div></div>`;
   }).join('');
   const empty = `<div class="empty rm-empty"><p>${esc(tf('No {console} games found yet.', { console: conName(cur) }))}</p></div>`;
   return `<div class="page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
