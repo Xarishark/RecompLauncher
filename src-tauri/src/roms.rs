@@ -375,9 +375,31 @@ pub fn make_console_folders(root: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The ROM folder the launcher sets up and keeps by console: ~/Games/ROMs.
+pub fn managed_root() -> Option<PathBuf> {
+    Some(dirs::home_dir()?.join("Games").join("ROMs"))
+}
+
+/// The console of a folder of the launcher's own structure: a console folder right inside the
+/// managed root. A folder of the same name anywhere else says nothing, so the player's own
+/// folders are read as they always were.
+fn managed_console(dir: &Path, managed: Option<&Path>) -> Option<&'static str> {
+    let root = managed?;
+    if dir.parent() != Some(root) {
+        return None;
+    }
+    let name = dir.file_name()?.to_str()?;
+    CONSOLE_FOLDERS.iter().find(|(_, folder)| name.eq_ignore_ascii_case(folder)).map(|(kind, _)| *kind)
+}
+
 /// The console a folder the file sits in is named for ("PS2", "Sony - PlayStation 2", "xbox"): the
 /// nearest such folder. "" when none is.
 pub fn folder_kind(p: &Path) -> &'static str {
+    folder_kind_in(p, managed_root().as_deref())
+}
+
+/// `folder_kind`, with the launcher's managed ROM folder given (tests use their own).
+fn folder_kind_in(p: &Path, managed: Option<&Path>) -> &'static str {
     const WORDS: [(&str, &str); 25] = [
         ("xbox 360", "x360"), ("xbox360", "x360"), ("x360", "x360"), ("original xbox", "xbox"), ("ogxbox", "xbox"), ("xbox", "xbox"),
         ("playstation 2", "ps2"), ("playstation2", "ps2"), ("ps2", "ps2"), ("playstation portable", "psp"), ("psp", "psp"),
@@ -394,7 +416,7 @@ pub fn folder_kind(p: &Path) -> &'static str {
     for dir in p.ancestors().skip(1) {
         let Some(n) = dir.file_name().and_then(|n| n.to_str()) else { continue };
         // The launcher's own console folders ("saturn", "n3ds") say it exactly.
-        if let Some((kind, _)) = CONSOLE_FOLDERS.iter().find(|(_, folder)| n.eq_ignore_ascii_case(folder)) {
+        if let Some(kind) = managed_console(dir, managed) {
             return kind;
         }
         let n = n.to_lowercase().replace(['_', '-'], " ");
@@ -1281,9 +1303,19 @@ mod tests {
 
     #[test]
     fn the_launchers_console_folders_name_their_console() {
-        assert_eq!(folder_kind(Path::new("/home/me/Games/ROMs/saturn/Baroque (Japan).chd")), "saturn");
-        assert_eq!(folder_kind(Path::new("/home/me/Games/ROMs/n3ds/Game.cia")), "3ds");
-        assert_eq!(folder_kind(Path::new("/home/me/Games/ROMs/xbox360/Black/Black.iso")), "x360");
+        let root = Some(Path::new("/home/me/Games/ROMs"));
+        assert_eq!(folder_kind_in(Path::new("/home/me/Games/ROMs/saturn/Baroque (Japan).chd"), root), "saturn");
+        assert_eq!(folder_kind_in(Path::new("/home/me/Games/ROMs/n3ds/Game.cia"), root), "3ds");
+        assert_eq!(folder_kind_in(Path::new("/home/me/Games/ROMs/xbox360/Black/Black.iso"), root), "x360");
+    }
+
+    #[test]
+    fn a_console_folder_of_the_players_own_says_nothing_new() {
+        let root = Some(Path::new("/home/me/Games/ROMs"));
+        assert_eq!(folder_kind_in(Path::new("/mnt/stuff/saturn/Baroque (Japan).chd"), root), "");
+        assert_eq!(folder_kind_in(Path::new("/home/me/Games/ROMs/backup/saturn/Baroque.chd"), root), "");
+        // What a folder's name said before stays as it was.
+        assert_eq!(folder_kind_in(Path::new("/mnt/stuff/ps2/Black.iso"), root), "ps2");
     }
 
     #[test]
@@ -1301,13 +1333,13 @@ mod tests {
     }
 
     #[test]
-    fn a_disc_image_in_a_console_folder_is_that_consoles() {
+    fn a_disc_image_in_a_saturn_folder_elsewhere_stays_unknown() {
         let d = tmp("console-disc");
         std::fs::create_dir_all(d.join("saturn")).unwrap();
         let chd = d.join("saturn/Baroque (Japan).chd");
         std::fs::write(&chd, b"MComprHD").unwrap();
         let rom = identify(&chd, 60 * 1024 * 1024).unwrap();
-        assert_eq!(rom.system, "saturn");
+        assert_eq!(rom.system, "");
         let _ = std::fs::remove_dir_all(&d);
     }
 

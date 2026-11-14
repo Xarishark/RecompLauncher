@@ -8195,18 +8195,19 @@ fn emulator_folders(st: State<'_, App>) -> Vec<emus::Found> {
 /// the player knows where each game goes and the launcher knows the console of a file that doesn't say.
 #[tauri::command(async)]
 fn games_rom_folder() -> Res<String> {
-    let dir = dirs::home_dir().ok_or_else(|| Error::Msg("Couldn't find your home folder.".into()))?.join("Games/ROMs");
+    let dir = roms::managed_root().ok_or_else(|| Error::Msg("Couldn't find your home folder.".into()))?;
     roms::make_console_folders(&dir).map_err(|_| Error::Msg("Couldn't create the ROMs folder in Games.".into()))?;
     Ok(dir.to_string_lossy().to_string())
 }
 
-/// The console folders inside one of the player's ROM folders (one set up before they existed).
-/// Only a folder already in the list: this never makes folders anywhere else.
+/// The console folders inside the launcher's Games/ROMs when it was set up before they existed.
+/// Only that folder, and only once it's in the list: the player's own folders are left as they are.
 #[tauri::command(async)]
 fn rom_console_folders(st: State<'_, App>, path: String) -> Res<()> {
     let p = PathBuf::from(path);
-    if !st.lib.lock().unwrap().settings.rom_dirs.contains(&p) {
-        return Err(Error::Msg("That isn't one of your ROM folders.".into()));
+    let managed = roms::managed_root().is_some_and(|root| root == p);
+    if !managed || !st.lib.lock().unwrap().settings.rom_dirs.contains(&p) {
+        return Err(Error::Msg("That isn't the launcher's ROMs folder.".into()));
     }
     roms::make_console_folders(&p).map_err(|_| Error::Msg("Couldn't create the console folders.".into()))
 }
