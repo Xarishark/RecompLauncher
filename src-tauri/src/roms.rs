@@ -1392,6 +1392,22 @@ pub fn part_of_file(p: &Path) -> Part {
     part_of(&name)
 }
 
+/// What the ROM Manager shows of a found file: what it is to its game, and for an Xbox 360 copy the
+/// title ID of its game, so an update or DLC sits with its game whatever the files are called.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CopyPart {
+    #[serde(flatten)]
+    pub part: Part,
+    pub title_id: Option<String>,
+}
+
+pub fn copy_part(r: &RomFile) -> CopyPart {
+    // An Xbox 360 disc image can be found as "xdvdfs" (Xbox or Xbox 360) until its folder says which.
+    let is_360 = matches!(r.system.as_str(), "x360" | "xdvdfs");
+    let title_id = if is_360 { copy_id(&r.path) } else { None };
+    CopyPart { part: part_of_file(&r.path), title_id }
+}
+
 /// Every found file that belongs to this catalog entry's game: its discs, updates and extra
 /// content, by the same name match as `match_catalog`.
 pub fn files_of(app: &Value, roms: &[RomFile]) -> Vec<RomFile> {
@@ -1683,6 +1699,29 @@ mod tests {
         let p = d.join("0123456789ABCDEF");
         fs::write(&p, stfs(0x0000_0002, "SkyRacer", "")).unwrap();
         assert_eq!(copy_id(&p).as_deref(), Some("4D5307E6"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_update_and_its_game_share_a_title_id() {
+        let d = tmp("x360-group");
+        fs::create_dir_all(d.join("SkyRacer")).unwrap();
+        fs::write(d.join("SkyRacer/default.xex"), xex(0x4D53_07E6)).unwrap();
+        fs::write(d.join("0123456789ABCDEF"), stfs(0x000B_0000, "Sky Racer GOTY", "")).unwrap();
+        let game = RomFile { path: d.join("SkyRacer"), system: "x360".into(), title: "SkyRacer".into(), region: String::new(), size: 0 };
+        let update = RomFile { path: d.join("0123456789ABCDEF"), system: "x360".into(), title: "Sky Racer GOTY".into(), region: String::new(), size: 1 };
+        assert_eq!(copy_part(&game).title_id.as_deref(), Some("4D5307E6"));
+        assert_eq!(copy_part(&update).title_id.as_deref(), Some("4D5307E6"));
+        assert_eq!(copy_part(&update).part.kind, "update");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn only_xbox_360_copies_carry_a_title_id() {
+        let d = tmp("x360-only");
+        fs::write(d.join("Game.z64"), [0x80, 0x37, 0x12, 0x40]).unwrap();
+        let rom = RomFile { path: d.join("Game.z64"), system: "n64".into(), title: "Game".into(), region: String::new(), size: 4 };
+        assert_eq!(copy_part(&rom).title_id, None);
         let _ = fs::remove_dir_all(&d);
     }
 

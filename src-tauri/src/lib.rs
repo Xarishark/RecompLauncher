@@ -1465,12 +1465,13 @@ async fn rom_games(st: State<'_, App>) -> Res<HashMap<String, roms::RomGame>> {
 }
 
 /// For the ROM Manager: what each found file is to its game (the game, a disc of a set, an update
-/// or extra content), by its path. The scanner's own answer, since some files only say in their
-/// header (Xbox 360 and PS3 packages, a Wii U .wua that packs the game with its DLC).
+/// or extra content) and an Xbox 360 copy's title ID, by its path. The scanner's own answer, since
+/// some files only say in their header (Xbox 360 and PS3 packages, a Wii U .wua that packs the game
+/// with its DLC).
 #[tauri::command]
-async fn rom_parts(st: State<'_, App>) -> Res<HashMap<String, roms::Part>> {
+async fn rom_parts(st: State<'_, App>) -> Res<HashMap<String, roms::CopyPart>> {
     let found = st.lib.lock().unwrap().roms.clone();
-    let parts = tokio::task::spawn_blocking(move || found.iter().map(|r| (r.path.to_string_lossy().to_string(), roms::part_of_file(&r.path))).collect());
+    let parts = tokio::task::spawn_blocking(move || found.iter().map(|r| (r.path.to_string_lossy().to_string(), roms::copy_part(r))).collect());
     Ok(parts.await.unwrap_or_default())
 }
 
