@@ -582,15 +582,24 @@ body.light .known-fix b{color:#127a45}
 .rm-con .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rm-con .n{font-weight:700;color:var(--muted);font-size:12.5px}
 .con-ic{flex:none;display:grid;place-items:center;width:38px;height:28px;border-radius:8px;font:800 10.5px/1 Figtree,sans-serif;letter-spacing:.02em;color:#fff;background:var(--c);text-shadow:0 1px 1px rgba(0,0,0,.35)}
-.rm-list{display:flex;flex-direction:column;gap:6px;min-width:0;min-height:0}
+.rm-list{display:flex;flex-direction:column;gap:6px;min-width:0;min-height:0;container-type:inline-size;container-name:rmlist}
 .rm-h{display:flex;align-items:center;gap:12px;margin-bottom:8px}
 .rm-h h2{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rm-h span:last-child{color:var(--muted);font-size:13.5px;white-space:nowrap}
 .rm-note{color:var(--muted);margin:0 0 6px}
-.rm-rom{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:14px;padding:12px 14px 12px 16px;border-radius:12px;background:var(--card)}
+/* A table of games: the column names and the rows share one set of columns. */
+.rm-rom,.rm-cols{display:grid;grid-template-columns:44px minmax(160px,2fr) minmax(110px,1fr) 88px 88px minmax(150px,1.4fr) 104px;align-items:center;gap:14px}
+.rm-rom{padding:10px 14px;border-radius:12px;background:var(--card)}
 .rm-rom:hover{background:var(--card2)}
-.rm-t{display:flex;flex-direction:column;gap:7px;min-width:0}
+.rm-cols{position:sticky;top:0;z-index:1;padding:2px 14px 6px;background:var(--bg);font:700 11px Figtree,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+.rm-ico{width:44px;height:44px;border-radius:10px;object-fit:cover;background:var(--card2)}
+.rm-ico.ph{display:grid;place-items:center;color:var(--dim)}
+.rm-ico.ph svg{width:20px;height:20px}
+.rm-t{display:flex;flex-direction:column;gap:3px;min-width:0}
 .rm-t b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rm-meta{display:none;color:var(--muted);font-size:12.5px}
+.rm-c{color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rm-id{justify-self:end}
 /* Each copy of the game: the same pill as the formats a recomp takes, and a press shows it in its folder. */
 .rm-copies{display:flex;gap:6px;flex-wrap:wrap}
 .rm-copy{display:inline-block;font:600 11.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--ink);background:rgba(52,242,232,.1);border:1px solid rgba(52,242,232,.28);border-radius:5px;padding:4px 6px;cursor:pointer}
@@ -612,11 +621,11 @@ body.light .known-fix b{color:#127a45}
 .rm-tip-l span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rm-tip-l small{color:var(--dim);white-space:nowrap}
 body.light .rm-copy{background:rgba(20,120,130,.08);border-color:rgba(20,120,130,.3)}
-.rm-p{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.rm-pair{height:28px;padding:0 11px;border-radius:999px;font:600 12.5px Figtree,sans-serif;color:var(--cyan);background:color-mix(in srgb,var(--cyan) 14%,transparent)}
+.rm-p{display:flex;gap:6px;flex-wrap:wrap;min-width:0}
+.rm-pair{height:28px;max-width:100%;padding:0 11px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:600 12.5px Figtree,sans-serif;color:var(--cyan);background:color-mix(in srgb,var(--cyan) 14%,transparent)}
 .rm-pair:hover{background:color-mix(in srgb,var(--cyan) 24%,transparent)}
 .rm-none{color:var(--dim);font-size:12.5px}
-.rm-how{margin-left:10px;font:500 12px Figtree,sans-serif;color:var(--dim)}
+.rm-how{font:500 12px Figtree,sans-serif;color:var(--dim)}
 .rm-empty{padding:40px 20px}
 /* Little room: the consoles go above the list as a wrapping row, and a game's recomps under its name. */
 @container rm (max-width:760px){
@@ -624,9 +633,19 @@ body.light .rm-copy{background:rgba(20,120,130,.08);border-color:rgba(20,120,130
   .rm-cons{overflow:visible;flex-direction:row;flex-wrap:wrap}
   .rm-rows{overflow:visible;padding-bottom:24px}
   .rm-con .nm{flex:none}
-  .rm-rom{grid-template-columns:minmax(0,1fr)}
+}
+/* A narrower list of games: region and size go on a line under the name. */
+@container rmlist (max-width:900px){
+  .rm-rom,.rm-cols{grid-template-columns:44px minmax(150px,2fr) minmax(110px,1fr) minmax(140px,1.4fr) auto}
+  .rm-region,.rm-size{display:none}
+  .rm-meta{display:block}
+}
+/* Narrow: no column names, and everything stacks beside the icon. */
+@container rmlist (max-width:600px){
+  .rm-cols{display:none}
+  .rm-rom{grid-template-columns:44px minmax(0,1fr);align-items:start}
+  .rm-rom>:not(.rm-ico):not(.rm-t){grid-column:2}
   .rm-id{justify-self:start}
-  .rm-p{justify-content:flex-start}
 }
 .shots{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 .shot{background:var(--card2);border-radius:12px;overflow:hidden;aspect-ratio:16/9}

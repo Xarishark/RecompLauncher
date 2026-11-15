@@ -6207,17 +6207,18 @@ function romGames(list) {
 function romPill(r) {
   const part = romPart(r);
   const tip = [r.path, r.size ? fmtB(r.size) : ''].filter(Boolean).join(' · ');
-  return `<button type="button" class="fmt rm-copy${part.kind === 'game' ? '' : ' extra'}" data-act="folder" data-path="${esc(romWhere(r))}" title="${esc(tip)}">${esc(romCopyLabel(r))}</button>`;
+  return `<button type="button" class="fmt rm-copy${part.kind === 'game' ? '' : ' extra'}" data-act="folder" data-path="${esc(romWhere(r))}" title="${esc(tip)}">${esc(romCopyLabel(r, false))}</button>`;
 }
 // A copy's format (or Folder) and what sets it apart: ".nsp · Update", ".iso · Disc 2 · Europe".
-function romCopyLabel(r) {
+// The row's own pill leaves the region out: the row says it already.
+function romCopyLabel(r, withRegion = true) {
   const part = romPart(r);
   const ext = r.size ? (baseName(r.path).match(/\.([a-z0-9]{2,5})$/i) || [, ''])[1].toLowerCase() : '';
   const bits = [ext ? '.' + ext : t('Folder')];
   if (part.kind === 'update') bits.push(t('Update'));
   if (part.kind === 'dlc') bits.push(t('DLC'));
   if (part.disc) bits.push(tf('Disc {n}', { n: part.disc }));
-  if (r.region) bits.push(r.region);
+  if (withRegion && r.region) bits.push(r.region);
   return bits.join(' · ');
 }
 // Where a copy opens: an extracted game is its folder (size 0), a file the folder it's in.
@@ -6305,7 +6306,7 @@ function pageRoms() {
   // thirty mostly empty consoles pushes the games out of sight.
   const shown = S.romAllCons || !firstWithGames ? all : all.filter((k) => counts[k] || k === cur);
   const hidden = all.length - shown.length;
-  const more = !firstWithGames ? '' : S.romAllCons ? t('Only consoles with games') : tn(hidden, '1 more console', '{n} more consoles');
+  const more = !firstWithGames || (!hidden && !S.romAllCons) ? '' : S.romAllCons ? t('Only consoles with games') : tn(hidden, '1 more console', '{n} more consoles');
   const moreBtn = more ? `<button type="button" class="rm-con rm-more" data-act="rom-allcons">${esc(more)}</button>` : '';
   const cons = shown.map((k) => `<button type="button" class="rm-con${k === cur ? ' on' : ''}${counts[k] ? '' : ' none'}" data-act="rom-con" data-k="${esc(k)}" aria-pressed="${k === cur}">${conBadge(k)}<span class="nm">${esc(conName(k))}</span><b class="n">${counts[k] ? fmtNum(counts[k]) : ''}</b></button>`).join('') + moreBtn;
   const list = romGames(roms.filter((r) => romConsole(r) === cur));
@@ -6316,18 +6317,29 @@ function pageRoms() {
     // The game first, then its updates and DLC.
     const copies = g.copies.slice().sort((a, b) => (romPart(a).kind !== 'game') - (romPart(b).kind !== 'game') || (romPart(a).disc || 0) - (romPart(b).disc || 0));
     const recs = g.game ? recompsOfGame(g.game) : uniq(copies.flatMap(romRecomps).map((a) => a.id)).map((id) => byId(id) || { id, name: id });
-    const paired = recs.length ? recs.map((a) => `<button type="button" class="rm-pair" data-act="open" data-id="${esc(a.id)}">${esc(a.name)}</button>`).join('') : `<span class="rm-none">${esc(t('No recomp found'))}</span>`;
+    const paired = recs.length ? recs.map((a) => `<button type="button" class="rm-pair" data-act="open" data-id="${esc(a.id)}" title="${esc(a.name)}">${esc(a.name)}</button>`).join('') : `<span class="rm-none">${esc(t('No recomp found'))}</span>`;
     // How the game was told, when it wasn't by the file itself: the player's word, or its name only.
     const hows = copies.map((r) => (romGameOf(r) || {}).how);
     const how = hows.includes('player') ? t('Paired by you') : g.game && !hows.includes('matched') ? t('Matched by name') : '';
     // Identify for a row that isn't a known game yet; Change for one the player wants to correct.
     const idLabel = g.game ? t('Change…') : t('Identify…');
     const idBtn = `<button type="button" class="btn sm rm-id" data-act="rom-id" data-i="${i}" title="${esc(t('Pick which game this is'))}">${esc(idLabel)}</button>`;
-    return `<div class="rm-rom"><div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</b><span class="rm-copies">${romCopies(copies)}</span></div><div class="rm-p">${paired}</div>${idBtn}</div>`;
+    // The game's picture: the icon of one of its recomps; a plain disc when it has none.
+    const withIcon = recs.find((a) => a.icon);
+    const icon = withIcon ? pic(thumbOf(withIcon.icon, 96), 'rm-ico') : `<span class="rm-ico ph" aria-hidden="true">${DISC_S}</span>`;
+    const regions = uniq(copies.map((r) => r.region)).join(', ');
+    const bytes = copies.reduce((sum, r) => sum + (Number(r.size) || 0), 0);
+    const size = bytes ? fmtB(bytes) : t('Folder');
+    // Region and size are their own columns when the list is wide, a line under the name when not.
+    const meta = [regions, size].filter(Boolean).map(esc).join(' · ');
+    return `<div class="rm-rom">${icon}<div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}</b><small class="rm-meta">${meta}</small>${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</div>
+      <div class="rm-copies">${romCopies(copies)}</div><div class="rm-c rm-region">${esc(regions || '–')}</div><div class="rm-c rm-size">${esc(size)}</div><div class="rm-p">${paired}</div>${idBtn}</div>`;
   }).join('');
+  // Column names, for the wide table (the narrower layouts put things under the name instead).
+  const cols = list.length ? `<div class="rm-cols" aria-hidden="true"><span></span><span>${esc(t('Game'))}</span><span>${esc(t('Copies'))}</span><span class="rm-region">${esc(t('Region'))}</span><span class="rm-size">${esc(t('Size'))}</span><span>${esc(t('Recomps'))}</span><span></span></div>` : '';
   const empty = `<div class="empty rm-empty"><p>${esc(tf('No {console} games found yet.', { console: conName(cur) }))}</p></div>`;
   return `<div class="page rm-page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
-    <section class="rm-list" aria-label="${esc(conName(cur))}"><div class="rm-h">${conBadge(cur)}<h2>${esc(conName(cur))}</h2><span>${esc(tn(list.length, '1 game', '{n} games'))}</span></div><div class="rm-rows">${note}${rows || empty}</div></section></div></div></div>`;
+    <section class="rm-list" aria-label="${esc(conName(cur))}"><div class="rm-h">${conBadge(cur)}<h2>${esc(conName(cur))}</h2><span>${esc(tn(list.length, '1 game', '{n} games'))}</span></div><div class="rm-rows">${note}${cols}${rows || empty}</div></section></div></div></div>`;
 }
 // The ROM Manager opens: matches are loaded once, and a Games/ROMs set up before the console
 // folders existed gets them now.
