@@ -6393,20 +6393,14 @@ const recompsOfGame = (g) => (S.cat.apps || []).filter((a) => a.origin === g.con
 // The recomps the launcher paired with this file, before rom_games has answered.
 const romRecomps = (r) => Object.entries(S.owned || {}).filter(([, f]) => f && f.path === r.path).map(([id]) => byId(id) || { id, name: id });
 async function loadRomGames() {
-  try { S.romGames = await invoke('rom_games'); } catch (e) { S.romGames = null; }
+  const [games, parts] = await Promise.all([invoke('rom_games').catch(() => null), invoke('rom_parts').catch(() => null)]);
+  S.romGames = games;
+  S.romParts = parts;
   if (S.view === 'roms') render(true);
 }
-// What a copy is to its game, from its name (like roms::part_of): an update, extra content, a disc
-// of a set, or the game. A Switch title ID ending in 800 is an update, another non-zero end is DLC.
-function romPart(r) {
-  const name = baseName(r.path).toLowerCase();
-  const tid = name.match(/(?:^|[^0-9a-f])01[0-9a-f]{14}(?![0-9a-f])/);
-  const end = tid ? tid[0].slice(-3) : '';
-  const disc = name.match(/(?:^|[^a-z0-9])(?:disc|disk|cd)[ _-]*(\d+)/);
-  if (end === '800' || (!tid && /(^|[^a-z])(upd|update|patch)([^a-z]|$)|title update|^tu_/.test(name))) return { kind: 'update' };
-  if ((end && end !== '000') || (!tid && /(^|[^a-z])(dlc|addon)([^a-z]|$)|add-on/.test(name))) return { kind: 'dlc' };
-  return { kind: 'game', disc: disc ? Number(disc[1]) : 0 };
-}
+// What a copy is to its game (the game, a disc of a set, an update or extra content), from the
+// scanner's rom_parts. Until that answers, every copy counts as the game.
+const romPart = (r) => (S.romParts || {})[r.path] || { kind: 'game', disc: null };
 // A game's name with what tells its copies apart taken out (region and dump tags, update, DLC and
 // disc words, versions), so every copy of one game lands on one row.
 const ROM_NOISE = new Set(['the', 'of', 'a', 'and', 'usa', 'us', 'europe', 'rev', 'update', 'upd', 'patch', 'dlc', 'disc', 'disk', 'cd']);

@@ -1464,6 +1464,16 @@ async fn rom_games(st: State<'_, App>) -> Res<HashMap<String, roms::RomGame>> {
     Ok(games.into_iter().map(|(p, g)| (p.to_string_lossy().to_string(), g)).collect())
 }
 
+/// For the ROM Manager: what each found file is to its game (the game, a disc of a set, an update
+/// or extra content), by its path. The scanner's own answer, since some files only say in their
+/// header (Xbox 360 and PS3 packages, a Wii U .wua that packs the game with its DLC).
+#[tauri::command]
+async fn rom_parts(st: State<'_, App>) -> Res<HashMap<String, roms::Part>> {
+    let found = st.lib.lock().unwrap().roms.clone();
+    let parts = tokio::task::spawn_blocking(move || found.iter().map(|r| (r.path.to_string_lossy().to_string(), roms::part_of_file(&r.path))).collect());
+    Ok(parts.await.unwrap_or_default())
+}
+
 /// The player says a found file is a copy of a game in the catalog. It then serves every recomp of that game.
 #[tauri::command(async)]
 fn rom_pair(st: State<'_, App>, path: String, console: String, game: String) -> Res<()> {
@@ -9287,6 +9297,7 @@ pub fn run() {
             games_rom_folder,
             rom_console_folders,
             rom_games,
+            rom_parts,
             rom_pair,
             rom_unpair,
             add_github,
