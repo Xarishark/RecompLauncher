@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <rect fill="#3c3c42" x="40" y="320" width="920" height="360" rx="40"/>
+  <rect fill="#46464c" x="66" y="346" width="868" height="308" rx="26"/>
+  <rect fill="#c8343c" x="66" y="606" width="868" height="14"/>
+  <rect fill="#45454a" x="130" y="380" width="230" height="200" rx="24"/>
+  <path fill="#28282c" d="M214,400h62a10,10,0,0,1,10,10v50h50a10,10,0,0,1,10,10v40a10,10,0,0,1-10,10h-50v50a10,10,0,0,1-10,10h-62a10,10,0,0,1-10-10v-50h-50a10,10,0,0,1-10-10v-40a10,10,0,0,1,10-10h50v-50a10,10,0,0,1,10-10Z"/>
+  <circle fill="#2c2c30" cx="245" cy="490" r="18"/>
+  <rect fill="#3d3d42" x="430" y="420" width="140" height="22" rx="11"/>
+  <rect fill="#3d3d42" x="430" y="460" width="140" height="22" rx="11"/>
+  <rect fill="#3d3d42" x="430" y="500" width="140" height="22" rx="11"/>
+  <circle fill="#45454a" cx="690" cy="480" r="70"/>
+  <circle fill="#45454a" cx="840" cy="480" r="70"/>
+  <circle fill="#1b1b1e" cx="690" cy="480" r="54"/>
+  <circle fill="#1b1b1e" cx="840" cy="480" r="54"/>
+  <path fill="#ffffff" opacity=".1" d="M654,460a42,42,0,0,1,62-18,48,48,0,0,0-62,18Zm150,0a42,42,0,0,1,62-18,48,48,0,0,0-62,18Z"/>
+  <text x="690" y="588" fill="#c9c9cd" font-family="Arial, sans-serif" font-weight="700" font-size="34" text-anchor="middle">1</text>
+  <text x="840" y="588" fill="#c9c9cd" font-family="Arial, sans-serif" font-weight="700" font-size="34" text-anchor="middle">2</text>
+</svg>

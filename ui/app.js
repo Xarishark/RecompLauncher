@@ -6370,8 +6370,9 @@ const CONSOLE_INFO = { n64: ['N64', 'Nintendo 64'], snes: ['SNES', 'Super Ninten
   s32x: ['32X', '32X'], gg: ['GG', 'Game Gear'], sms: ['SMS', 'Master System'], saturn: ['SAT', 'Saturn'], dc: ['DC', 'Dreamcast'], amiga: ['AMI', 'Amiga'],
   arcade: ['ARC', 'Arcade'], cdi: ['CDi', 'CD-i'] };
 const conName = (id) => (id === 'unknown' ? t('Not identified') : ((S.cat && S.cat.origins) || []).some((o) => o.id === id) ? originName(id) : (CONSOLE_INFO[id] || [])[1] || id);
-// Consoles with a picture in img/consoles (the MilkToastRat Pack, CC0). The rest keep a badge in their colour.
-const CONSOLE_ICONS = new Set(['n64', 'snes', 'nes', 'gb', 'gbc', 'gba', 'ds', '3ds', 'gc', 'wii', 'wiiu', 'switch', 'switch2', 'ps1', 'ps2', 'ps3', 'ps4', 'ps5', 'psp', 'xbox', 'x360', 'amiga']);
+// Consoles with a picture in img/consoles: the MilkToastRat Pack (CC0), and the Sega, Virtual Boy, arcade
+// and CD-i ones drawn for the launcher in its style. The rest keep a badge in their colour.
+const CONSOLE_ICONS = new Set(['n64', 'snes', 'nes', 'gb', 'gbc', 'gba', 'ds', '3ds', 'vb', 'gc', 'wii', 'wiiu', 'switch', 'switch2', 'ps1', 'ps2', 'ps3', 'ps4', 'ps5', 'psp', 'xbox', 'x360', 'genesis', 's32x', 'gg', 'sms', 'saturn', 'dc', 'amiga', 'arcade', 'cdi']);
 const conBadge = (id) => CONSOLE_ICONS.has(id) ? `<img class="con-img" src="img/consoles/${esc(id)}.svg" alt="" width="38" height="38" loading="lazy">` : `<span class="con-ic" style="--c:${CONSOLE_COLORS[id] || CONSOLE_COLORS.other}" aria-hidden="true">${id === 'unknown' ? '?' : esc((CONSOLE_INFO[id] || [])[0] || id.slice(0, 3).toUpperCase())}</span>`;
 // A file's console: what the scan read off it, or "unknown" when it could be one of two
 // ("xdvdfs" is Xbox or Xbox 360, "playstation" is PS1 or PS2) or nothing said.
@@ -6417,11 +6418,10 @@ function romGameKey(r) {
 }
 // The name a row shows: the game's copy with the fewest tags, without them.
 const romShownTitle = (copies) => copies.map((r) => String(r.title || '').replace(/\s*(\([^)]*\)|\[[^\]]*\])/g, '').trim()).filter(Boolean).sort((a, b) => a.length - b.length)[0] || baseName(copies[0].path);
-// The copies of each game on a console, one entry per game.
 // An Xbox 360 copy's title ID, which its updates and DLC carry too: "" for other copies.
 const romTitleId = (r) => romPart(r).title_id || '';
+// The copies of each game on a console, one entry per game.
 function romGames(list) {
-  const by = new Map();
   // A title ID one copy's known game owns takes every copy with that ID onto the game's row.
   const idRow = new Map();
   for (const r of list) {
@@ -6433,6 +6433,7 @@ function romGames(list) {
     if (!id || romGameOf(r)) return romGameKey(r);
     return idRow.get(id) || 'id:' + id;
   };
+  const by = new Map();
   for (const r of list) { const k = keyOf(r); if (!by.has(k)) by.set(k, []); by.get(k).push(r); }
   const entry = (copies) => {
     const known = copies.find(romGameOf);
