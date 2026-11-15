@@ -556,6 +556,9 @@ body.light .known-fix b{color:#127a45}
 /* Beta and Report a bug on the line above the title, at its two ends. */
 .rm-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:-18px}
 .rm-bug{display:inline-flex;align-items:center;gap:7px}
+/* While it looks through the folders: the busy bar and a running count, above the panels. */
+.rm-scan{display:flex;flex-direction:column;gap:8px;margin-top:-12px}
+.rm-scan span{color:var(--muted);font-size:13px}
 .rm-more{justify-content:center;color:var(--muted);font-weight:600}
 /* Identify's list of games: buttons, so it looks the same on every system. */
 .rid-list{display:flex;flex-direction:column;gap:2px;max-height:240px;min-height:120px;overflow:auto;padding:4px;border-radius:12px;background:var(--fill);border:1px solid var(--line2)}
@@ -570,8 +573,16 @@ body.light .known-fix b{color:#127a45}
 .rm-page{height:100%;padding-bottom:24px}
 .rm-wrap{container-type:inline-size;container-name:rm;flex:1;min-height:0}
 .romman{display:grid;grid-template-columns:minmax(220px,280px) minmax(0,1fr);gap:24px;align-items:stretch;height:100%}
-.rm-cons{display:flex;flex-direction:column;gap:4px;min-height:0;overflow:auto;overscroll-behavior:contain;padding:6px;border-radius:16px;background:var(--card);scrollbar-width:thin}
-.rm-rows{display:flex;flex-direction:column;gap:6px;flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding-right:6px;scrollbar-width:thin}
+/* Two panels: a small one with the consoles, a big one with the console's games. */
+.rm-cons{display:flex;flex-direction:column;gap:4px;min-height:0;overflow:auto;overscroll-behavior:contain;padding:8px;border-radius:18px;background:var(--card);border:1px solid var(--line)}
+.rm-rows{display:flex;flex-direction:column;flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;margin-right:-8px;padding-right:8px}
+/* Their scrollbars: out of sight until the pointer is on the panel, then a thin bar in the app's
+   colours instead of the system's (scrollbar-color for WebView2, ::-webkit-scrollbar for WebKitGTK). */
+.rm-cons,.rm-rows{scrollbar-width:thin;scrollbar-color:transparent transparent}
+.rm-cons:hover,.rm-rows:hover,.rm-cons:focus-within,.rm-rows:focus-within{scrollbar-color:var(--line3) transparent}
+.rm-cons::-webkit-scrollbar,.rm-rows::-webkit-scrollbar{width:8px;background:transparent}
+.rm-cons::-webkit-scrollbar-thumb,.rm-rows::-webkit-scrollbar-thumb{border-radius:8px;background:transparent}
+.rm-cons:hover::-webkit-scrollbar-thumb,.rm-rows:hover::-webkit-scrollbar-thumb{background:var(--line3)}
 .rm-con{display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:11px;text-align:left;color:var(--ink);font:600 14px Figtree,sans-serif;transition:background .15s}
 .rm-con:hover{background:var(--card2)}
 .rm-con.on{background:var(--card3);box-shadow:inset 3px 0 0 var(--cyan)}
@@ -582,16 +593,18 @@ body.light .known-fix b{color:#127a45}
 .rm-con .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rm-con .n{font-weight:700;color:var(--muted);font-size:12.5px}
 .con-ic{flex:none;display:grid;place-items:center;width:38px;height:28px;border-radius:8px;font:800 10.5px/1 Figtree,sans-serif;letter-spacing:.02em;color:#fff;background:var(--c);text-shadow:0 1px 1px rgba(0,0,0,.35)}
-.rm-list{display:flex;flex-direction:column;gap:6px;min-width:0;min-height:0;container-type:inline-size;container-name:rmlist}
+.rm-list{display:flex;flex-direction:column;gap:6px;min-width:0;min-height:0;container-type:inline-size;container-name:rmlist;padding:16px 16px 8px;border-radius:18px;background:var(--card);border:1px solid var(--line)}
 .rm-h{display:flex;align-items:center;gap:12px;margin-bottom:8px}
 .rm-h h2{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rm-h span:last-child{color:var(--muted);font-size:13.5px;white-space:nowrap}
 .rm-note{color:var(--muted);margin:0 0 6px}
 /* A table of games: the column names and the rows share one set of columns. */
 .rm-rom,.rm-cols{display:grid;grid-template-columns:44px minmax(160px,2fr) minmax(110px,1fr) 88px 88px minmax(150px,1.4fr) 104px;align-items:center;gap:14px}
-.rm-rom{padding:10px 14px;border-radius:12px;background:var(--card)}
+/* Inside the panel the games are lines of a table, not cards of their own. */
+.rm-rom{padding:10px 12px;border-radius:12px;border-top:1px solid var(--line)}
+.rm-cols+.rm-rom,.rm-note+.rm-rom,.rm-rom:hover,.rm-rom:hover+.rm-rom{border-top-color:transparent}
 .rm-rom:hover{background:var(--card2)}
-.rm-cols{position:sticky;top:0;z-index:1;padding:2px 14px 6px;background:var(--bg);font:700 11px Figtree,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+.rm-cols{position:sticky;top:0;z-index:1;padding:2px 12px 8px;background:var(--card);font:700 11px Figtree,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
 .rm-ico{width:44px;height:44px;border-radius:10px;object-fit:cover;background:var(--card2)}
 .rm-ico.ph{display:grid;place-items:center;color:var(--dim)}
 .rm-ico.ph svg{width:20px;height:20px}

@@ -1400,9 +1400,22 @@ fn pc_check() -> manage::PcCheck {
 // ---------- your games (ROMs) ----------
 
 #[tauri::command]
-async fn scan_roms(st: State<'_, App>) -> Res<Vec<roms::RomFile>> {
+async fn scan_roms(app: AppHandle, st: State<'_, App>) -> Res<Vec<roms::RomFile>> {
     let dirs = st.lib.lock().unwrap().settings.rom_dirs.clone();
-    let found = tokio::task::spawn_blocking(move || roms::scan(&dirs)).await.map_err(|e| Error::Msg(e.to_string()))?;
+    // How far the scan got, for the ROM Manager's progress bar: a few times a second at most, as a
+    // big drive reports every few hundred files.
+    let scan = move || {
+        let mut last = std::time::Instant::now();
+        let mut tell = |seen: usize, found: usize| {
+            if last.elapsed() < std::time::Duration::from_millis(150) {
+                return;
+            }
+            last = std::time::Instant::now();
+            let _ = app.emit("rom-scan", json!({ "seen": seen, "found": found }));
+        };
+        roms::scan_with(&dirs, &mut tell)
+    };
+    let found = tokio::task::spawn_blocking(scan).await.map_err(|e| Error::Msg(e.to_string()))?;
     st.lib.lock().unwrap().roms = found.clone();
     st.save();
     Ok(found)

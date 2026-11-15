@@ -673,6 +673,15 @@ fn identify_switch(folder: &Path) -> Option<RomFile> {
 /// Linked folders are looked through once (a link back into a folder already seen is skipped), so
 /// the scan can't go round in circles, and a whole drive of millions of files still ends.
 pub fn scan(dirs: &[PathBuf]) -> Vec<RomFile> {
+    scan_with(dirs, &mut |_, _| {})
+}
+
+/// How often the scan says how far it got: every this many files and folders looked at.
+const PROGRESS_EVERY: usize = 250;
+
+/// `scan`, telling `progress` how many files and folders it has looked at and how many copies it
+/// found so far, every few hundred, so a big drive shows it's still going.
+pub fn scan_with(dirs: &[PathBuf], progress: &mut dyn FnMut(usize, usize)) -> Vec<RomFile> {
     const MOST: usize = 1_000_000;
     let mut out = vec![];
     let mut seen = 0usize;
@@ -701,6 +710,9 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<RomFile> {
             seen += 1;
             if seen > MOST {
                 return out;
+            }
+            if seen % PROGRESS_EVERY == 0 {
+                progress(seen, out.len());
             }
             let Ok(mut kind) = e.file_type() else { continue };
             // A link counts as what it points to.
@@ -1340,6 +1352,18 @@ mod tests {
         std::fs::write(&chd, b"MComprHD").unwrap();
         let rom = identify(&chd, 60 * 1024 * 1024).unwrap();
         assert_eq!(rom.system, "");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_scan_says_how_far_it_got() {
+        let d = tmp("scan-progress");
+        for i in 0..(PROGRESS_EVERY * 2 + 10) {
+            std::fs::write(d.join(format!("note{i}.txt")), b"x").unwrap();
+        }
+        let mut told = vec![];
+        scan_with(&[d.clone()], &mut |seen, _| told.push(seen));
+        assert_eq!(told, vec![PROGRESS_EVERY, PROGRESS_EVERY * 2]);
         let _ = std::fs::remove_dir_all(&d);
     }
 

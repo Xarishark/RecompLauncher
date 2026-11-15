@@ -6188,7 +6188,10 @@ function romGameKey(r) {
   const g = romGameOf(r);
   if (g) return 'game:' + g.console + ':' + g.game.toLowerCase();
   const plain = String(r.title || '').toLowerCase().replace(/[’']/g, '').replace(/\([^)]*\)|\[[^\]]*\]/g, ' ');
-  const words = plain.split(/[^a-z0-9]+/).filter((w) => w && !ROM_NOISE.has(w) && !/^v\d+$/.test(w) && !/^\d$/.test(w));
+  // A disc's number goes ("Disc 2"), a number that's part of the name stays: Pokemon Stadium 2
+  // isn't Pokemon Stadium.
+  const noDisc = plain.replace(/\b(disc|disk|cd)\s*\d+/g, ' ');
+  const words = noDisc.split(/[^a-z0-9]+/).filter((w) => w && !ROM_NOISE.has(w) && !/^v\d+$/.test(w));
   return words.join(' ') || String(r.path);
 }
 // The name a row shows: the game's copy with the fewest tags, without them.
@@ -6300,7 +6303,7 @@ function pageRoms() {
   // Beta and Report a bug share the top line, so the bug button stays at the top right however
   // the title and the buttons under it wrap.
   const head = `<div class="rm-top"><span class="bh-tag">${esc(t('Beta'))}</span>${bug}</div><div class="head"><div><h1>${esc(t('ROM Manager'))}</h1><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div>
-    <div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan">${esc(t('Look again'))}</button>` : ''}</div></div>`;
+    <div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan"${S.romScan ? " disabled" : ""}>${esc(t('Look again'))}</button>` : ''}</div></div>${romScanBar()}`;
   if (!dirs.length) return `<div class="page">${head}<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg><h2>${esc(t('No ROM folders yet'))}</h2><p>${esc(t('Set up Games/ROMs and put each game in its console\'s folder, or add a folder you already have.'))}</p></div></div>`;
   // The consoles with games (and the open one); the empty ones only when asked for, as a list of
   // thirty mostly empty consoles pushes the games out of sight.
@@ -6652,10 +6655,28 @@ async function loadShots(id) {
   if (S.view === 'game' && S.arg === id) refreshGame();
 }
 
+// The ROM Manager's scan bar: how many files it looked at and copies it found so far. It can't know
+// how many there are in all, so the bar shows it's busy rather than a share.
+function romScanBar() {
+  if (!S.romScan) return '';
+  const said = tf('Looking through your folders… {seen} files looked at, {found} copies found', { seen: S.romScan.seen, found: S.romScan.found });
+  return `<div class="prog rm-scan" role="status"><div class="track busy"><i></i></div><span id="rm-scan-said">${esc(said)}</span></div>`;
+}
+// Only the count changes while it looks: that line is updated, not the whole page.
+T.event.listen('rom-scan', ({ payload: p }) => {
+  if (!S.romScan) return;
+  S.romScan = { seen: Number(p.seen) || 0, found: Number(p.found) || 0 };
+  const said = document.getElementById('rm-scan-said');
+  if (said) said.textContent = tf('Looking through your folders… {seen} files looked at, {found} copies found', { seen: S.romScan.seen, found: S.romScan.found });
+});
 async function scanRoms() {
   if (!(S.settings.rom_dirs || []).length) { S.roms = []; S.owned = {}; await addOwned(); render(true); return; }
   toast(t('Looking through your folders…'));
+  // While it looks, the ROM Manager shows how far it got (the core's rom-scan events fill this in).
+  S.romScan = { seen: 0, found: 0 };
+  if (S.view === 'roms') render(true);
   try { S.roms = await invoke('scan_roms'); await loadOwned(); const added = await addOwned(); toast(tn(S.roms.length, 'Found 1 game file.', 'Found {n} game files.') + ' ' + (added ? tn(added, '1 recomp went into your Library.', '{n} recomps went into your Library.') : tf('{n} have recomps.', { n: Object.keys(S.owned).length }))); } catch (e) { fail(e); }
+  S.romScan = null;
   render(true);
   // The ROM Manager's rows follow the games the new files are copies of.
   if (S.view === 'roms') loadRomGames();
