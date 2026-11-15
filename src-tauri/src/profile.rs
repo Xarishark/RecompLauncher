@@ -92,8 +92,26 @@ pub struct Prepare {
     pub timeout: u64,
     /// Ticks on the setup screen before the step runs, each adding its arguments when it's on
     /// (a library the builder downloads under a company's license, say).
-    #[serde(default, deserialize_with = "options_lenient")]
+    #[serde(default, deserialize_with = "options_lenient", skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<PrepareOption>,
+    /// Changed by the developer when players must run this step again (its output changed, say).
+    /// The only thing in the profile that makes a finished setup count as not done.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    /// Files the step leaves when it has finished ({home}, {local}, {install}...). All there: the
+    /// game is set up, even when another launcher built it.
+    #[serde(default, deserialize_with = "paths_lenient", skip_serializing_if = "Vec::is_empty")]
+    pub done: Vec<String>,
+}
+
+/// A path or a list of them; anything else is nothing.
+fn paths_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(match v {
+        Value::String(s) if !s.trim().is_empty() => vec![s],
+        Value::Array(l) => l.into_iter().filter_map(|x| x.as_str().map(str::to_string)).filter(|x| !x.trim().is_empty()).collect(),
+        _ => vec![],
+    })
 }
 
 /// prepare.options as written, each one that can be read: one with a value of the wrong type is
@@ -1363,7 +1381,15 @@ impl Profile {
             .is_some_and(|e| e.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe")))
     }
 
+    /// The file the game is given for the player's copy, by its `game` (`GameCopy::file_for`).
+    pub fn handed(&self, game: Option<&Path>) -> Option<PathBuf> {
+        let copy = game?;
+        Some(self.game.as_ref().map(|g| g.file_for(copy)).unwrap_or_else(|| copy.to_path_buf()))
+    }
+
     pub fn prepare(&self, install: &Path, game: Option<&Path>) -> std::io::Result<()> {
+        let handed = self.handed(game);
+        let game = handed.as_deref();
         let _w = WineFill::new(self.through_proton(install));
         for c in &self.config {
             // A path put into a TOML or JSON string: forward slashes, so the backslashes aren't escapes.
@@ -1412,9 +1438,10 @@ impl Profile {
         }
         std::fs::create_dir_all(&dir)?;
         let mut items: Vec<PathBuf> = if copy.is_dir() { std::fs::read_dir(copy)?.flatten().map(|e| e.path()).collect() } else { vec![copy.to_path_buf()] };
-        // A .cue sheet is only the table of contents: the .bin tracks it names come along too.
+        // A .cue or .gdi is only the table of contents: the tracks it names come along too (and an
+        // .m3u's discs with theirs).
         if !copy.is_dir() {
-            let tracks = cue_tracks(copy);
+            let tracks = sheet_tracks(copy);
             // The game wants the disc's one .bin under its own name (ctr-u.bin), and the player
             // picked the sheet: the track it names goes there, not the sheet renamed.
             if tracks.len() == 1 && g.name.trim().to_ascii_lowercase().ends_with(".bin") {
@@ -1474,6 +1501,85 @@ impl Profile {
 
     /// The game's files already where it reads them (put there by the player): the folder they're
     /// in. Then no copy has to be picked.
+    /// Its setup step's finished files (`prepare.done`): None when it lists none, else whether
+    /// every one is there.
+    pub fn build_done(&self, install: &Path) -> Option<bool> {
+        let done = &self.prepare.as_ref()?.done;
+        if done.is_empty() {
+            return None;
+        }
+        Some(done.iter().all(|d| Path::new(&fill(d, install, None)).exists()))
+    }
+
+    /// Whether starting the game hands it the player's copy ({game} in its arguments or
+    /// variables). When it doesn't, a finished build is all it needs.
+    pub fn start_uses_game(&self) -> bool {
+        self.start.as_ref().is_some_and(|s| s.args.iter().chain(s.env.values()).any(|a| a.contains("{game}")))
+    }
+
+    /// The game's own folder (the first `folders.game`) when it has a setup step and nothing says
+    /// what it leaves, and that folder already holds files: a build made before, by this
+    /// launcher or the developer's own.
+    /// The folder this game's setup builds it into (its first `folders.game`), filled in, when the
+    /// game is built from the player's copy and that folder isn't the game's own: a build the player
+    /// has somewhere else can stand in for it.
+    pub fn build_home(&self, install: &Path) -> Option<PathBuf> {
+        self.prepare.as_ref()?;
+        self.start.as_ref()?;
+        let first = self.folders.get("game")?.first()?;
+        if first.path.contains("{game}") {
+            return None;
+        }
+        let dir = PathBuf::from(fill(&first.path, install, None));
+        // (A folder inside the game's own counts: a build from before the setup moved there can
+        // still stand in for it.)
+        (dir.is_absolute() && dir != install).then_some(dir)
+    }
+
+    /// The player's build in `to` standing in for the setup's own folder: every path of the
+    /// profile in that folder (how it starts, its settings files, its saves, its folders) moves
+    /// with it. What the setup step runs stays as it is: the launcher's own build goes to its folder.
+    pub fn rebase_build(&mut self, install: &Path, to: &Path) {
+        let Some(from) = self.build_home(install) else { return };
+        let moved = |t: &mut String| {
+            if t.is_empty() || t.contains("{game}") {
+                return;
+            }
+            let full = PathBuf::from(fill(t, install, None));
+            if let Ok(rest) = full.strip_prefix(&from) {
+                *t = (if rest.as_os_str().is_empty() { to.to_path_buf() } else { to.join(rest) }).to_string_lossy().into_owned();
+            }
+        };
+        if let Some(st) = self.start.as_mut() {
+            st.args.iter_mut().for_each(moved);
+            st.env.values_mut().for_each(moved);
+        }
+        for c in self.config.iter_mut() {
+            for f in c.file.iter_mut() {
+                moved(&mut f.path);
+                moved(&mut f.when);
+            }
+        }
+        self.saves.iter_mut().for_each(moved);
+        for list in self.folders.values_mut() {
+            for f in list.iter_mut() {
+                moved(&mut f.path);
+                moved(&mut f.when);
+            }
+        }
+    }
+
+    pub fn build_folder_here(&self, install: &Path) -> Option<PathBuf> {
+        let pr = self.prepare.as_ref()?;
+        if !pr.done.is_empty() {
+            return None;
+        }
+        let first = self.folders.get("game")?.first()?;
+        let dir = PathBuf::from(fill(&first.path, install, None));
+        let full = std::fs::read_dir(&dir).ok()?.flatten().next().is_some();
+        (full && dir != install).then_some(dir)
+    }
+
     pub fn already_in_place(&self, install: &Path) -> Option<PathBuf> {
         let g = self.game.as_ref()?;
         let into = g.into.trim().trim_matches(['/', '\\']);
@@ -1487,6 +1593,8 @@ impl Profile {
     }
 
     pub fn env_vars(&self, install: &Path, game: Option<&Path>) -> Vec<(String, String)> {
+        let handed = self.handed(game);
+        let game = handed.as_deref();
         let through_proton = self.through_proton(install);
         let _w = WineFill::new(through_proton);
         self.start.as_ref().map(|s| s.env.iter().filter(|(k, _)| env_name_ok(k)).filter_map(|(k, v)| {
@@ -1545,6 +1653,8 @@ impl Profile {
     }
 
     fn expanded_args(&self, install: &Path, game: Option<&Path>, picks: &BTreeMap<String, usize>, through_proton: bool) -> Vec<String> {
+        let handed = self.handed(game);
+        let game = handed.as_deref();
         let _w = WineFill::new(through_proton);
         let Some(s) = self.start.as_ref() else { return vec![] };
         let mut args: Vec<String> = s.args.iter().map(|a| fill(a, install, game)).collect();
@@ -2023,17 +2133,34 @@ fn folder_holds(p: &Path) -> Holds {
     if any { Holds::OnlyMedia } else { Holds::Nothing }
 }
 
-/// A file in the top folder of an ISO 9660 disc image (PlayStation 2 and most others).
+/// A file in the top folder of an ISO 9660 disc image (PlayStation 2 and most others), in 2048-byte
+/// sectors or raw CD ones (2352 bytes, the data after a 24 or 16-byte header), which is how a
+/// PlayStation .bin keeps them.
 fn iso9660_has(path: &Path, name: &str) -> bool {
     let Ok(mut f) = std::fs::File::open(path) else { return false };
-    let Some(pvd) = read_at(&mut f, 16 * 2048, 2048) else { return false };
-    if &pvd[1..6] != b"CD001" {
-        return false;
+    for (sector, data_at) in [(2048u64, 0u64), (2352, 24), (2352, 16)] {
+        let Some(pvd) = read_at(&mut f, 16 * sector + data_at, 2048) else { continue };
+        if &pvd[1..6] == b"CD001" {
+            return iso9660_root_has(&mut f, &pvd, sector, data_at, name);
+        }
     }
+    false
+}
+
+/// A file in the root folder the volume descriptor `pvd` points to. The folder is read a sector at
+/// a time, since raw sectors keep each 2048 bytes of it apart.
+fn iso9660_root_has(f: &mut std::fs::File, pvd: &[u8], sector: u64, data_at: u64, name: &str) -> bool {
     let root = &pvd[156..190];
     let lba = u32::from_le_bytes([root[2], root[3], root[4], root[5]]) as u64;
     let size = (u32::from_le_bytes([root[10], root[11], root[12], root[13]]) as usize).min(1 << 20);
-    let Some(dir) = read_at(&mut f, lba * 2048, size) else { return false };
+    let mut dir = Vec::with_capacity(size);
+    for s in 0..size.div_ceil(2048) as u64 {
+        let Some(part) = read_at(f, (lba + s) * sector + data_at, 2048) else { break };
+        dir.extend(part);
+    }
+    if dir.is_empty() {
+        return false;
+    }
     let want = name.to_ascii_uppercase();
     let mut i = 0;
     while i < dir.len() {
@@ -2116,6 +2243,33 @@ pub fn packed(g: &GameCopy, p: &Path) -> Option<String> {
 }
 
 impl GameCopy {
+    /// The file the game is given for the player's copy. A .cue, .gdi or .m3u stands for a disc
+    /// kept as several files: a game whose label (or `name`) names that kind of file reads it, and
+    /// any other one reads single disc images, so it's given the disc's first data track (the
+    /// .bin). An .m3u for a game that names .cue or .gdi gets its first disc's sheet.
+    pub fn file_for(&self, copy: &Path) -> PathBuf {
+        let ext = copy.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        if !matches!(ext.as_str(), "cue" | "gdi" | "m3u") || self.names_kind(&ext) {
+            return copy.to_path_buf();
+        }
+        if ext == "m3u" {
+            let first = crate::roms::first_disc(copy);
+            let named = first.as_deref().and_then(Path::extension).is_some_and(|e| self.names_kind(&e.to_string_lossy().to_ascii_lowercase()));
+            if let (Some(disc), true) = (first, named) {
+                return disc;
+            }
+        }
+        let tracks = crate::roms::sheet_data_tracks(copy).unwrap_or_default();
+        tracks.into_iter().next().unwrap_or_else(|| copy.to_path_buf())
+    }
+
+    /// The label or the file name asks for this kind of file: ".cue", or "cue" as a word.
+    fn names_kind(&self, ext: &str) -> bool {
+        let label = self.label.to_ascii_lowercase();
+        let as_word = label.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w == ext);
+        as_word || self.name.to_ascii_lowercase().ends_with(&format!(".{ext}"))
+    }
+
     /// Whether its check tells this game's copy from another game's of the same console: a file
     /// only this game has, a disc ID. "Any disc image" or "any N64 ROM" doesn't, so
     /// it isn't used to find the game among the player's copies.
@@ -2199,7 +2353,14 @@ pub fn check_copy(g: &GameCopy, p: &Path) -> Result<(), String> {
         // The launcher can make the plain copy itself (convert.rs): the setup offers to.
         return Err(format!("CONVERT|That's a compressed .{ext} image, and this recomp reads plain .iso files."));
     }
-    if !g.check.iso9660.is_empty() && !iso9660_has(p, &g.check.iso9660) {
+    // A .cue, .gdi or .m3u: what's on the disc is in its data tracks, so those are what's checked.
+    // A sheet whose tracks aren't beside it is said now, rather than read as the wrong game.
+    let tracks = crate::roms::sheet_data_tracks(p);
+    if tracks.as_ref().is_some_and(Vec::is_empty) {
+        return Err(format!("The disc's track files (.bin) aren't beside that .{ext}. Keep them in the same folder, with the names it lists."));
+    }
+    let on_disc = tracks.unwrap_or_else(|| vec![p.to_path_buf()]);
+    if !g.check.iso9660.is_empty() && !on_disc.iter().any(|d| iso9660_has(d, &g.check.iso9660)) {
         return Err("That disc image isn't the release this recomp reads.".into());
     }
     // A disc ID that isn't one of this game's (a copy whose ID can't be read isn't refused).
@@ -2304,29 +2465,13 @@ pub fn n64_to_z64(b: &mut [u8], order: u8) {
     }
 }
 
-/// The track files a .cue sheet names (`FILE "Game (Track 1).bin" BINARY`), when they're next to it.
-pub fn cue_tracks(cue: &Path) -> Vec<PathBuf> {
-    if !cue.extension().map(|e| e.eq_ignore_ascii_case("cue")).unwrap_or(false) {
-        return vec![];
-    }
-    let Some(dir) = cue.parent() else { return vec![] };
-    let text = std::fs::read(cue).map(|b| String::from_utf8_lossy(&b[..b.len().min(64 * 1024)]).to_string()).unwrap_or_default();
-    text.lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            if !l.to_ascii_uppercase().starts_with("FILE ") {
-                return None;
-            }
-            let rest = l[5..].trim();
-            let name = if let Some(r) = rest.strip_prefix('"') { r.split('"').next()? } else { rest.split_whitespace().next()? };
-            let p = Path::new(name);
-            // Only a plain file name next to the sheet, never a path out of its folder.
-            if p.components().count() != 1 || name.contains("..") {
-                return None;
-            }
-            Some(dir.join(p)).filter(|f| f.is_file())
-        })
-        .collect()
+/// The files a .cue, .gdi or .m3u names that sit right beside it, read by the scanner's own sheet
+/// reader (crate::roms). They're put in the game's folder under their own names, so a file in
+/// another folder, or one reached through "..", is never brought along.
+pub fn sheet_tracks(sheet: &Path) -> Vec<PathBuf> {
+    let Some(dir) = sheet.parent() else { return vec![] };
+    let files = crate::roms::sheet_files(sheet).unwrap_or_default();
+    files.into_iter().filter(|f| f.parent() == Some(dir)).collect()
 }
 
 /// An N64 ROM's first 64 bytes (its header), in .z64 order whatever order the file is in.
@@ -3231,6 +3376,28 @@ mod tests {
     }
 
     #[test]
+    fn gdi_brings_its_tracks() {
+        let d = tmp("gdi-place");
+        std::fs::write(d.join("game.gdi"), "2\n1 0 4 2352 track01.bin 0\n2 600 0 2352 track02.raw 0\n").unwrap();
+        std::fs::write(d.join("track01.bin"), b"data").unwrap();
+        std::fs::write(d.join("track02.raw"), b"music").unwrap();
+        let b: Value = serde_json::from_str(r#"{"start":"g.exe","files":{"how":"folder","folder":".","accepts":"iso"}}"#).unwrap();
+        let install = d.join("game");
+        std::fs::create_dir_all(&install).unwrap();
+        from_boot(&b).unwrap().place(&install, Some(&d.join("game.gdi"))).unwrap();
+        assert!(install.join("track01.bin").is_file() && install.join("track02.raw").is_file());
+    }
+
+    #[test]
+    fn a_track_in_another_folder_is_not_brought_along() {
+        let d = tmp("cue-subfolder");
+        std::fs::create_dir_all(d.join("tracks")).unwrap();
+        std::fs::write(d.join("tracks/game.bin"), b"disc").unwrap();
+        std::fs::write(d.join("game.cue"), "FILE \"tracks/game.bin\" BINARY\n  TRACK 01 MODE2/2352\n").unwrap();
+        assert!(sheet_tracks(&d.join("game.cue")).is_empty());
+    }
+
+    #[test]
     fn rom_game_version_and_byte_order() {
         let d = tmp("n64id");
         let mut h = vec![0u8; 128];
@@ -3361,6 +3528,81 @@ mod tests {
         assert!(check_copy(&g, &d).is_err());
     }
 
+    /// A raw (2352-byte sector) CD track, as in a PlayStation .bin, with SLUS_000.01 in its top folder.
+    fn raw_track() -> Vec<u8> {
+        let sector = |n: usize| n * 2352 + 24;
+        let mut img = vec![0u8; 20 * 2352];
+        let pvd = sector(16);
+        img[pvd + 1..pvd + 6].copy_from_slice(b"CD001");
+        img[pvd + 158..pvd + 162].copy_from_slice(&18u32.to_le_bytes());
+        img[pvd + 166..pvd + 170].copy_from_slice(&2048u32.to_le_bytes());
+        let name = b"SLUS_000.01;1";
+        let e = sector(18);
+        img[e] = (33 + name.len()) as u8;
+        img[e + 32] = name.len() as u8;
+        img[e + 33..e + 33 + name.len()].copy_from_slice(name);
+        img
+    }
+
+    fn racer_copy(label: &str) -> GameCopy {
+        GameCopy { kind: "iso".into(), label: label.into(), check: Check { iso9660: "SLUS_000.01".into(), ..Default::default() }, ..Default::default() }
+    }
+
+    /// A .cue for one raw data track named `track`.
+    fn cue_for(d: &Path, track: &str) -> PathBuf {
+        let cue = d.join("game.cue");
+        std::fs::write(&cue, format!("FILE \"{track}\" BINARY\n  TRACK 01 MODE2/2352\n")).unwrap();
+        cue
+    }
+
+    #[test]
+    fn a_raw_bin_passes_an_iso9660_check() {
+        let d = tmp("raw-bin");
+        let bin = d.join("game.bin");
+        std::fs::write(&bin, raw_track()).unwrap();
+        assert!(check_copy(&racer_copy(""), &bin).is_ok());
+    }
+
+    #[test]
+    fn a_cue_is_checked_through_its_data_track() {
+        let d = tmp("cue-check");
+        std::fs::write(d.join("game.bin"), raw_track()).unwrap();
+        assert!(check_copy(&racer_copy(""), &cue_for(&d, "game.bin")).is_ok());
+    }
+
+    #[test]
+    fn a_cue_without_its_tracks_is_refused() {
+        let d = tmp("cue-no-tracks");
+        let err = check_copy(&racer_copy(""), &cue_for(&d, "game.bin")).unwrap_err();
+        assert!(err.contains("aren't beside"), "{err}");
+    }
+
+    #[test]
+    fn a_game_that_reads_single_images_is_given_a_cues_bin() {
+        let d = tmp("cue-hand-bin");
+        std::fs::write(d.join("game.bin"), raw_track()).unwrap();
+        let cue = cue_for(&d, "game.bin");
+        assert_eq!(racer_copy("Your disc image of SkyRacer (USA).").file_for(&cue), d.join("game.bin"));
+    }
+
+    #[test]
+    fn a_game_that_names_cue_is_given_the_cue() {
+        let d = tmp("cue-hand-cue");
+        std::fs::write(d.join("game.bin"), raw_track()).unwrap();
+        let cue = cue_for(&d, "game.bin");
+        assert_eq!(racer_copy("Pick the .cue file, with its .bin tracks beside it.").file_for(&cue), cue);
+    }
+
+    #[test]
+    fn the_handed_file_reaches_the_games_environment() {
+        let d = tmp("cue-env");
+        std::fs::write(d.join("game.bin"), raw_track()).unwrap();
+        let cue = cue_for(&d, "game.bin");
+        let p: Profile = serde_json::from_str(r#"{"format":1,"game":{"kind":"iso","label":"Your disc image."},"start":{"program":["skyracer"],"env":{"GAME_BIN":"{game}"}}}"#).unwrap();
+        let env = p.env_vars(&d, Some(&cue));
+        assert!(env.iter().any(|(k, v)| k == "GAME_BIN" && v.ends_with("game.bin")), "{env:?}");
+    }
+
     #[test]
     fn nup_build_id_checks_a_package_or_folder_by_content() {
         let d = tmp("nupcheck");
@@ -3396,5 +3638,112 @@ mod tests {
         assert!(e.iter().any(|(k, v)| k == "GAME_DATA" && v.ends_with("data") && v.contains("games")));
         assert_eq!(e.len(), 2, "PATH, the launcher's own and bad names stay out: {e:?}");
         assert!(env_name_ok("_X1") && !env_name_ok("A-B") && !env_name_ok("path"));
+    }
+}
+
+#[cfg(test)]
+mod build_here_tests {
+    use super::*;
+
+    fn prof(v: serde_json::Value) -> Profile {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn a_build_already_made_plays_without_the_copy() {
+        let dir = std::env::temp_dir().join(format!("rl-b51-built-{}", std::process::id()));
+        let game = dir.join("Games").join("Hopper");
+        std::fs::create_dir_all(&game).unwrap();
+        let done = game.join("hopper_prepared.bin");
+        let base = serde_json::json!({
+            "game": { "kind": "iso_or_folder", "label": "Your copy" },
+            "prepare": { "program": ["HopperBuilder.exe"], "args": ["--prepare", "--game", "{game}"], "done": [done.to_string_lossy()] },
+            "start": { "program": ["Hopper.exe"], "args": ["--play", game.to_string_lossy()] },
+            "folders": { "game": [{ "path": game.to_string_lossy() }] }
+        });
+        let p = prof(base.clone());
+        assert_eq!(p.build_done(&dir), Some(false), "one done file missing asks for the copy");
+        std::fs::write(&done, b"x").unwrap();
+        assert_eq!(p.build_done(&dir), Some(true));
+        assert!(!p.start_uses_game());
+        // A start that hands the game the copy still asks for it.
+        let mut v = base.clone();
+        v["start"]["args"] = serde_json::json!(["--disc", "{game}"]);
+        assert!(prof(v).start_uses_game());
+        let mut v = base.clone();
+        v["start"]["env"] = serde_json::json!({ "DISC": "{game}" });
+        assert!(prof(v).start_uses_game());
+        // No done list: the game's folder with files in it is offered as the build on this PC.
+        let mut v = base.clone();
+        v["prepare"].as_object_mut().unwrap().remove("done");
+        let p = prof(v.clone());
+        assert_eq!(p.build_done(&dir), None);
+        assert_eq!(p.build_folder_here(&dir), Some(game.clone()));
+        std::fs::remove_file(&done).unwrap();
+        assert_eq!(prof(v).build_folder_here(&dir), None, "an empty folder isn't a build");
+        // One path for done works too.
+        let mut v = base.clone();
+        v["prepare"]["done"] = serde_json::json!(done.to_string_lossy());
+        assert_eq!(prof(v).prepare.unwrap().done.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod own_build_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn builder() -> Profile {
+        serde_json::from_value(json!({
+            "format": 1,
+            "game": { "kind": "iso_or_folder", "label": "Your copy" },
+            "start": { "program": ["HopperBuilder.exe"], "args": ["--play", "{home}/Games/Hopper"] },
+            "prepare": { "program": ["HopperBuilder.exe"], "args": ["--cli", "--prepare", "--game", "{game}"] },
+            "config": [{ "id": "main", "format": "ini", "file": [{ "path": "{home}/Games/Hopper/options.ini" }] }],
+            "saves": ["{local}/hopper", "{home}/Games/Hopper/user"],
+            "folders": { "saves": [{ "path": "{home}/Games/Hopper/user", "if": "{home}/Games/Hopper/user" }], "game": [{ "path": "{home}/Games/Hopper" }] }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_build_the_player_already_has_stands_in_for_the_setups_own_folder() {
+        let install = std::env::temp_dir().join("rl-own-build-install");
+        let mine = std::env::temp_dir().join("rl-own-build-mine");
+        let mut p = builder();
+        let home = p.build_home(&install).expect("built into a folder of its own");
+        assert!(home.ends_with("Games/Hopper") || home.ends_with("Games\\Hopper"));
+        p.rebase_build(&install, &mine);
+        let s = p.start.as_ref().unwrap();
+        assert_eq!(s.args[0], "--play");
+        assert_eq!(PathBuf::from(&s.args[1]), mine);
+        assert_eq!(PathBuf::from(&p.config[0].file[0].path), mine.join("options.ini"));
+        assert_eq!(p.saves[0], "{local}/hopper", "paths outside that folder stay as they are");
+        assert_eq!(PathBuf::from(&p.saves[1]), mine.join("user"));
+        assert_eq!(PathBuf::from(&p.folders["saves"][0].when), mine.join("user"));
+        assert_eq!(PathBuf::from(&p.folders["game"][0].path), mine);
+        // What the setup step runs stays as it is: the launcher's own build goes to its folder.
+        assert_eq!(p.prepare.as_ref().unwrap().args, vec!["--cli", "--prepare", "--game", "{game}"]);
+    }
+
+    #[test]
+    fn only_games_built_into_a_folder_of_their_own_have_one() {
+        let install = std::env::temp_dir().join("rl-own-build-install2");
+        let mut p = builder();
+        p.folders.insert("game".into(), vec![Place { path: "{install}".into(), when: String::new() }]);
+        assert_eq!(p.build_home(&install), None, "the game's own folder itself");
+        let mut inside = builder();
+        inside.folders.insert("game".into(), vec![Place { path: "{install}/game".into(), when: String::new() }]);
+        assert_eq!(inside.build_home(&install), Some(install.join("game")), "a folder inside it still has one");
+        let mut q = builder();
+        q.prepare = None;
+        assert_eq!(q.build_home(&install), None, "not built from the copy");
+        let mut r = builder();
+        r.folders.remove("game");
+        assert_eq!(r.build_home(&install), None);
+        let before = serde_json::to_string(&p).unwrap();
+        p.rebase_build(&install, Path::new("/elsewhere"));
+        assert_eq!(serde_json::to_string(&p).unwrap(), before, "nothing moves without a folder of its own");
     }
 }

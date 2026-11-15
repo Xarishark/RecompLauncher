@@ -26,7 +26,7 @@ pub struct RomFile {
 }
 
 const N64: [&str; 3] = ["z64", "n64", "v64"];
-const DISC: [&str; 6] = ["iso", "gcm", "rvz", "wbfs", "ciso", "chd"];
+const DISC: [&str; 7] = ["iso", "gcm", "rvz", "wia", "wbfs", "ciso", "chd"];
 /// Cartridge ROMs and game files of the other consoles recomps come from (NES, Game Boy, DS, 3DS,
 /// Switch, Virtual Boy, Genesis, 32X, Game Gear, Master System, SNES, Amiga). Matched to a recomp by
 /// name; which console is left open, as their ids in the catalog vary.
@@ -228,9 +228,24 @@ pub fn copy_id(p: &Path) -> Option<String> {
     if !p.is_file() {
         return None;
     }
+    // A .cue, .gdi or .m3u: the disc's ID is on its first data track that has one.
+    if let Some(set) = folded(p) {
+        return set.data.iter().find_map(|t| copy_id(t));
+    }
     let mut f = fs::File::open(p).ok()?;
     let mut head = [0u8; 0x60];
     read_at(&mut f, 0, &mut head).ok()?;
+    // An Xbox 360 update or DLC package: the title ID of the game it's for.
+    if let Some(h) = stfs_header(&mut f) {
+        return stfs_title_id(&h);
+    }
+    if let Some(id) = ps3_pkg_content_id(&head) {
+        return Some(ps3_pkg_title_id(id));
+    }
+    let is_wua = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("wua"));
+    if is_wua {
+        return wua_title_id(p);
+    }
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if N64.contains(&ext.as_str()) || matches!([head[0], head[1], head[2], head[3]], [0x80, 0x37, 0x12, 0x40] | [0x37, 0x80, 0x40, 0x12] | [0x40, 0x12, 0x37, 0x80]) {
         let mut h = [0u8; 0x40];
@@ -243,16 +258,7 @@ pub fn copy_id(p: &Path) -> Option<String> {
         }
         return game_code(&h[0x3B..0x3F]);
     }
-    // GameCube and Wii: the disc's header, at the start of a plain image, or where WBFS, CISO and
-    // WIA/RVZ images keep a copy of it.
-    let at = match &head[..4] {
-        b"WBFS" => 0x200,
-        b"CISO" => 0x8000,
-        b"WIA\x01" | b"RVZ\x01" => 0x58,
-        _ => 0,
-    };
-    let mut disc = [0u8; 0x20];
-    if read_at(&mut f, at, &mut disc).is_ok() && (disc[0x18..0x1C] == [0x5D, 0x1C, 0x9E, 0xA3] || disc[0x1C..0x20] == [0xC2, 0x33, 0x9F, 0x3D]) {
+    if let Some((disc, _)) = nintendo_disc(&mut f) {
         return game_code(&disc[..6]);
     }
     if let Iso::PlayStation(Some(cnf)) = iso_kind(&mut f) {
@@ -264,6 +270,29 @@ pub fn copy_id(p: &Path) -> Option<String> {
     }
     if let Some(at) = x360_default_xex(&mut f) {
         return xex_title(&mut f, at);
+    }
+    None
+}
+
+/// A GameCube or Wii disc's header and which of the two it is, read from its magic numbers (Wii
+/// at 0x18, GameCube at 0x1C). The header is at the start of a plain image; WBFS, CISO and WIA/RVZ
+/// images keep a plain copy of it, so no keys or unpacking are needed.
+fn nintendo_disc(f: &mut fs::File) -> Option<([u8; 0x20], &'static str)> {
+    let mut magic = [0u8; 4];
+    read_at(f, 0, &mut magic).ok()?;
+    let at = match &magic {
+        b"WBFS" => 0x200,
+        b"CISO" => 0x8000,
+        b"WIA\x01" | b"RVZ\x01" => 0x58,
+        _ => 0,
+    };
+    let mut disc = [0u8; 0x20];
+    read_at(f, at, &mut disc).ok()?;
+    if disc[0x18..0x1C] == [0x5D, 0x1C, 0x9E, 0xA3] {
+        return Some((disc, "wii"));
+    }
+    if disc[0x1C..0x20] == [0xC2, 0x33, 0x9F, 0x3D] {
+        return Some((disc, "gc"));
     }
     None
 }
@@ -317,6 +346,89 @@ fn x360_default_xex(f: &mut fs::File) -> Option<u64> {
         return None;
     }
     None
+}
+
+/// How much of an Xbox 360 content package (STFS: CON, LIVE or PIRS) is read: its plain header up
+/// to the end of the title's name. The header is signed but never encrypted, so no keys are needed.
+const STFS_HEADER: usize = 0x1711;
+
+/// An Xbox 360 package's header, when the file starts with one of the three package magics.
+fn stfs_header(f: &mut fs::File) -> Option<Vec<u8>> {
+    let mut magic = [0u8; 4];
+    read_at(f, 0, &mut magic).ok()?;
+    if !matches!(&magic, b"CON " | b"LIVE" | b"PIRS") {
+        return None;
+    }
+    let mut h = vec![0u8; STFS_HEADER];
+    read_at(f, 0, &mut h).ok()?;
+    Some(h)
+}
+
+/// The title ID ("4D5307E6") of the game an Xbox 360 package belongs to.
+fn stfs_title_id(h: &[u8]) -> Option<String> {
+    let id = u32::from_be_bytes([h[0x360], h[0x361], h[0x362], h[0x363]]);
+    (id != 0).then(|| format!("{id:08X}"))
+}
+
+/// A name in a package header: UTF-16 big-endian, ended by a zero or the field's end.
+fn stfs_name(field: &[u8]) -> String {
+    let units: Vec<u16> = field.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).take_while(|&u| u != 0).collect();
+    String::from_utf16_lossy(&units).trim().to_string()
+}
+
+/// An Xbox 360 title update or downloadable content package, as its header says.
+struct Package {
+    /// "update" or "dlc".
+    kind: &'static str,
+    /// The game's name, which is what it's matched to its game by.
+    title: String,
+    /// The package's own name (the DLC's, often empty in a title update).
+    display: String,
+}
+
+/// Title updates and DLC are kept as files named only by a content ID, with no file type, so their
+/// header says what they are. Its content type tells an update from DLC; other packages (Arcade
+/// games, saves, profiles, demos) aren't extra content for a game and are left out.
+fn x360_package(p: &Path) -> Option<Package> {
+    let h = stfs_header(&mut fs::File::open(p).ok()?)?;
+    let content_type = u32::from_be_bytes([h[0x344], h[0x345], h[0x346], h[0x347]]);
+    let kind = match content_type {
+        0x000B_0000 => "update",
+        0x0000_0002 => "dlc",
+        _ => return None,
+    };
+    // The first of each name table is the English one.
+    let display = stfs_name(&h[0x411..0x411 + 0x80]);
+    let title = stfs_name(&h[0x1691..0x1691 + 0x80]);
+    Some(Package { kind, title, display })
+}
+
+/// An Xbox 360 update or DLC package: named for its game, but never a copy of the game itself.
+pub fn is_extra_package(r: &RomFile) -> bool {
+    r.system == "x360" && r.path.is_file() && x360_package(&r.path).is_some()
+}
+
+/// The start of a PS3 package, up to the end of its content ID. It's plain, so no keys are needed.
+fn ps3_pkg_header(p: &Path) -> Option<[u8; 0x54]> {
+    let mut h = [0u8; 0x54];
+    read_at(&mut fs::File::open(p).ok()?, 0, &mut h).ok()?;
+    Some(h)
+}
+
+/// A PS3 package's content ID ("UP0082-BLUS31197_00-DOD3PATCH0000101"), when the header is one: a
+/// PS4 package also ends in .pkg but starts with 0x7F CNT instead, and isn't read.
+fn ps3_pkg_content_id(h: &[u8]) -> Option<&str> {
+    if h.len() < 0x54 || !h.starts_with(b"\x7FPKG") {
+        return None;
+    }
+    let id = std::str::from_utf8(&h[0x30..0x54]).ok()?.trim_end_matches('\0');
+    let title_id = id.get(7..16)?;
+    valid_playstation_id(title_id).then_some(id)
+}
+
+/// The game's title ID inside a content ID that `ps3_pkg_content_id` accepted.
+fn ps3_pkg_title_id(content_id: &str) -> String {
+    content_id[7..16].to_string()
 }
 
 /// Letters and digits only, or None.
@@ -400,7 +512,8 @@ pub fn folder_kind(p: &Path) -> &'static str {
 
 /// `folder_kind`, with the launcher's managed ROM folder given (tests use their own).
 fn folder_kind_in(p: &Path, managed: Option<&Path>) -> &'static str {
-    const WORDS: [(&str, &str); 25] = [
+    const WORDS: [(&str, &str); 30] = [
+        ("arcade", "arcade"), ("mame", "arcade"), ("fbneo", "arcade"), ("fba", "arcade"), ("finalburn", "arcade"),
         ("xbox 360", "x360"), ("xbox360", "x360"), ("x360", "x360"), ("original xbox", "xbox"), ("ogxbox", "xbox"), ("xbox", "xbox"),
         ("playstation 2", "ps2"), ("playstation2", "ps2"), ("ps2", "ps2"), ("playstation portable", "psp"), ("psp", "psp"),
         ("playstation 3", "ps3"), ("ps3", "ps3"), ("playstation 1", "ps1"), ("psx", "ps1"), ("ps1", "ps1"), ("psone", "ps1"), ("playstation", "playstation"),
@@ -427,10 +540,9 @@ fn folder_kind_in(p: &Path, managed: Option<&Path>) -> &'static str {
     ""
 }
 
-/// A disc image's console: what's inside it says, and where it says one of two, the folder it's in
-/// picks (an Xbox disc in a folder named "Xbox 360").
-fn disc_system(p: &Path, ext: &str) -> &'static str {
-    let inside = if ext == "iso" { disc_kind(p) } else { "" };
+/// A disc image's console: what's inside it says (`inside`, from `disc_kind`), and where it says
+/// one of two, or nothing, the folder it's in picks (an Xbox disc in a folder named "Xbox 360").
+fn disc_system(p: &Path, inside: &'static str) -> &'static str {
     let folder = folder_kind(p);
     match inside {
         "" => folder,
@@ -438,6 +550,229 @@ fn disc_system(p: &Path, ext: &str) -> &'static str {
         "playstation" if matches!(folder, "ps1" | "ps2") => folder,
         k => k,
     }
+}
+
+/// A disc kept as several files has a small text sheet that lists them: a .cue and its .bin
+/// tracks (PlayStation, Saturn), a .gdi and its tracks (Dreamcast), or an .m3u playlist naming
+/// each disc of a set. The sheet stands for the whole disc or set, so it's found once.
+const SHEET: [&str; 3] = ["cue", "gdi", "m3u"];
+
+/// Real sheets are a few KB; a big file with one of these names isn't a sheet and isn't read.
+const MAX_SHEET: u64 = 64 * 1024;
+
+/// What a sheet stands for: every file it folds in (so none is listed again on its own), and the
+/// data tracks, in disc order, that say which console it's for.
+#[derive(Default)]
+struct Folded {
+    files: Vec<PathBuf>,
+    data: Vec<PathBuf>,
+}
+
+impl Folded {
+    /// The disc's or set's size: its tracks and disc images, not the sheets in it. A file named
+    /// twice counts once.
+    fn size(&self) -> u64 {
+        let mut counted = std::collections::HashSet::new();
+        let mut total = 0;
+        for f in &self.files {
+            if is_sheet(f) || !counted.insert(f) {
+                continue;
+            }
+            total += fs::metadata(f).map(|m| m.len()).unwrap_or(0);
+        }
+        total
+    }
+}
+
+fn ext_of(p: &Path) -> String {
+    p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
+}
+
+fn is_sheet(p: &Path) -> bool {
+    SHEET.contains(&ext_of(p).as_str())
+}
+
+fn read_sheet(p: &Path) -> Option<String> {
+    let mut b = Vec::new();
+    fs::File::open(p).ok()?.take(MAX_SHEET + 1).read_to_end(&mut b).ok()?;
+    if b.len() as u64 > MAX_SHEET {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&b).into_owned())
+}
+
+/// A file a sheet names, found next to the sheet. Sheets made on Windows use backslashes and
+/// often another case than the files have on disk, so both are allowed for. None when it's missing.
+fn sheet_file(sheet: &Path, name: &str) -> Option<PathBuf> {
+    let name = name.trim().replace('\\', "/");
+    if name.is_empty() {
+        return None;
+    }
+    let given = Path::new(&name);
+    if given.is_absolute() {
+        return given.is_file().then(|| given.to_path_buf());
+    }
+    let path = game_path(sheet.parent()?, &name)?;
+    path.is_file().then_some(path)
+}
+
+/// The name in a line's quotes (`FILE "Game (Track 1).bin" BINARY`), or else its first word.
+fn quoted_or_first(rest: &str) -> Option<&str> {
+    let rest = rest.trim();
+    if let Some(q) = rest.strip_prefix('"') {
+        return q.split('"').next();
+    }
+    rest.split_whitespace().next()
+}
+
+/// A .cue's tracks: each FILE line names a file, and the TRACK lines under it say whether it holds
+/// data ("MODE2/2352") or music ("AUDIO").
+fn cue_folded(sheet: &Path, text: &str) -> Folded {
+    let mut out = Folded::default();
+    // The file the TRACK lines that follow belong to; None while it's missing.
+    let mut current: Option<PathBuf> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        let upper = line.to_ascii_uppercase();
+        if upper.starts_with("FILE ") {
+            current = quoted_or_first(&line[5..]).and_then(|n| sheet_file(sheet, n));
+            out.files.extend(current.clone());
+            continue;
+        }
+        if !upper.starts_with("TRACK ") || upper.ends_with("AUDIO") {
+            continue;
+        }
+        let Some(file) = &current else { continue };
+        if !out.data.contains(file) {
+            out.data.push(file.clone());
+        }
+    }
+    out
+}
+
+/// A .gdi's tracks: after the count, one line each, "number start type sector-size file offset",
+/// where type 4 is data and 0 is music. The file's name may be quoted when it has spaces.
+fn gdi_folded(sheet: &Path, text: &str) -> Folded {
+    let mut out = Folded::default();
+    for line in text.lines().skip(1) {
+        let Some((kind, name)) = gdi_line(line) else { continue };
+        let Some(file) = sheet_file(sheet, name) else { continue };
+        if kind == "4" {
+            out.data.push(file.clone());
+        }
+        out.files.push(file);
+    }
+    out
+}
+
+/// A .gdi track line's type and file name.
+fn gdi_line(line: &str) -> Option<(&str, &str)> {
+    let mut fields = line.split_whitespace();
+    let kind = fields.nth(2)?;
+    // The name starts after the fourth field; it may have spaces in it, so the rest is kept whole.
+    let mut rest = line.trim_start();
+    for _ in 0..4 {
+        rest = rest.split_once(char::is_whitespace)?.1.trim_start();
+    }
+    Some((kind, quoted_or_first(rest)?))
+}
+
+/// An .m3u's discs, in the order it lists them (lines starting with # are comments). A disc that
+/// is a .cue or .gdi brings its tracks along. A playlist inside a playlist isn't followed, so one
+/// that names itself can't go round in circles.
+fn m3u_folded(sheet: &Path, text: &str) -> Folded {
+    let mut out = Folded::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(disc) = sheet_file(sheet, line) else { continue };
+        let ext = ext_of(&disc);
+        if ext == "m3u" {
+            continue;
+        }
+        out.files.push(disc.clone());
+        let tracks = if ext == "cue" || ext == "gdi" { folded(&disc) } else { None };
+        match tracks {
+            Some(t) => {
+                out.files.extend(t.files);
+                out.data.extend(t.data);
+            }
+            None => out.data.push(disc),
+        }
+    }
+    out
+}
+
+/// What a .cue, .gdi or .m3u folds in. None for any other file, or a sheet too big to be one.
+fn folded(p: &Path) -> Option<Folded> {
+    let ext = ext_of(p);
+    if !SHEET.contains(&ext.as_str()) {
+        return None;
+    }
+    let text = read_sheet(p)?;
+    match ext.as_str() {
+        "cue" => Some(cue_folded(p, &text)),
+        "gdi" => Some(gdi_folded(p, &text)),
+        _ => Some(m3u_folded(p, &text)),
+    }
+}
+
+/// The data tracks a .cue, .gdi or .m3u names that are there, in disc order. None for any other
+/// file, so a copy check knows to look at the file itself.
+pub fn sheet_data_tracks(p: &Path) -> Option<Vec<PathBuf>> {
+    folded(p).map(|set| set.data)
+}
+
+/// Every file a .cue, .gdi or .m3u names that's there: its tracks (and an .m3u's discs with theirs).
+/// None for any other file.
+pub fn sheet_files(p: &Path) -> Option<Vec<PathBuf>> {
+    folded(p).map(|set| set.files)
+}
+
+/// The first disc an .m3u lists that's there (its .cue, .gdi or disc image).
+pub fn first_disc(p: &Path) -> Option<PathBuf> {
+    if ext_of(p) != "m3u" {
+        return None;
+    }
+    folded(p)?.files.into_iter().next()
+}
+
+/// A sheet found as one copy. Its console is read from its data tracks like an .iso's (a raw
+/// 2352-byte track works too), its size is its tracks' (only the sheet's own when they're missing,
+/// so a stray sheet doesn't look like a whole disc). It's kept even with tracks missing, so the
+/// player sees the copy and can fix it.
+fn identify_sheet(p: &Path, size: impl FnOnce() -> Option<u64>) -> Option<RomFile> {
+    let own = size()?;
+    let set = folded(p)?;
+    let tracks = set.size();
+    let size = if tracks > 0 { tracks } else { own };
+    let inside = set.data.iter().map(|t| disc_kind(t)).find(|k| !k.is_empty()).unwrap_or("");
+    let mut system = disc_system(p, inside);
+    // GD-ROM dumps are the Dreamcast's (and NAOMI's, an arcade board any arcade recomp takes).
+    if system.is_empty() && ext_of(p) == "gdi" {
+        system = "dc";
+    }
+    let title = p.file_stem()?.to_str()?.to_string();
+    Some(RomFile { path: p.to_path_buf(), system: system.into(), title, region: String::new(), size })
+}
+
+/// Takes out the files a found sheet already stands for: a .cue listed in an .m3u, or a disc image
+/// a .cue names. Paths are compared as the file system resolves them, since a sheet may name a
+/// file through another case or a "..".
+pub fn fold_sets(found: Vec<RomFile>) -> Vec<RomFile> {
+    let key = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let inside: std::collections::HashSet<PathBuf> = found.iter().filter_map(|r| folded(&r.path)).flat_map(|s| s.files).map(|f| key(&f)).collect();
+    if inside.is_empty() {
+        return found;
+    }
+    // Only disc images and sheets can be in a set: other files aren't looked up.
+    let could_be_in_one = |p: &Path| {
+        let ext = ext_of(p);
+        DISC.contains(&ext.as_str()) || SHEET.contains(&ext.as_str())
+    };
+    found.into_iter().filter(|r| !could_be_in_one(&r.path) || !inside.contains(&key(&r.path))).collect()
 }
 
 /// Consoles whose games come on cartridges (or as cartridge files): a disc image is never one of theirs.
@@ -464,7 +799,7 @@ fn fits(rom: &RomFile, origin: &str) -> bool {
         rom.system.as_str()
     } else {
         match system_for(&ext) {
-            "" if DISC.contains(&ext.as_str()) => folder_kind(&rom.path),
+            "" if DISC.contains(&ext.as_str()) || SHEET.contains(&ext.as_str()) => folder_kind(&rom.path),
             s => s,
         }
     };
@@ -478,13 +813,32 @@ fn fits(rom: &RomFile, origin: &str) -> bool {
     }
 }
 
-/// One file: a ROM, a disc image, or an Xbox 360 game's default.xex (which stands for its folder).
+/// One file: a ROM, a disc image (or the .cue, .gdi or .m3u that stands for one or a set), an Xbox
+/// 360 game's default.xex (which stands for its folder), or an Xbox 360 title update or DLC package.
 pub fn identify(p: &Path, size: u64) -> Option<RomFile> {
     identify_with_size(p, || Some(size))
 }
 
-fn identify_with_size(p: &Path, size: impl FnOnce() -> Option<u64>) -> Option<RomFile> {
-    let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+fn identify_by_type(p: &Path, size: impl FnOnce() -> Option<u64>) -> Option<RomFile> {
+    let Some(ext) = p.extension() else { return identify_package(p, size) };
+    let ext = ext.to_str()?.to_ascii_lowercase();
+    if ext == "zip" || ext == "7z" {
+        return identify_archive(p, &ext, size);
+    }
+    if WIIU.contains(&ext.as_str()) {
+        return identify_wiiu(p, &ext, size);
+    }
+    // Title updates are also kept under names like TU_16L61VP_0000004000000.00000000000G1, where
+    // what looks like a file type is part of the content ID. No file type this scans for is that long.
+    if ext.len() > 4 {
+        return identify_package(p, size);
+    }
+    if ext == "pkg" {
+        return identify_ps3_pkg(p, size);
+    }
+    if SHEET.contains(&ext.as_str()) {
+        return identify_sheet(p, size);
+    }
     let is_n64 = N64.contains(&ext.as_str());
     let is_disc = DISC.contains(&ext.as_str());
     let is_cart = CART.contains(&ext.as_str());
@@ -499,8 +853,9 @@ fn identify_with_size(p: &Path, size: impl FnOnce() -> Option<u64>) -> Option<Ro
     } else if is_disc && size > 50 * 1024 * 1024 {
         // A disc image's file type rarely says its console (an .iso is any of them): what's inside
         // it, or the folder it's kept in, does.
+        let inside = if ext == "iso" { disc_kind(p) } else { "" };
         let system = match system_for(&ext) {
-            "" => disc_system(p, &ext),
+            "" => disc_system(p, inside),
             s => s,
         };
         Some(RomFile { path: p.to_path_buf(), system: system.into(), title: stem, region: String::new(), size })
@@ -514,6 +869,182 @@ fn identify_with_size(p: &Path, size: impl FnOnce() -> Option<u64>) -> Option<Ro
     } else {
         None
     }
+}
+
+/// An Xbox 360 title update or DLC package, matched to its game by the game's name in its header.
+/// Only a file big enough to hold the header is opened, and only its first four bytes are read
+/// unless they're a package's.
+fn identify_package(p: &Path, size: impl FnOnce() -> Option<u64>) -> Option<RomFile> {
+    let size = size()?;
+    if size < STFS_HEADER as u64 {
+        return None;
+    }
+    let pkg = x360_package(p)?;
+    let file_name = p.file_name()?.to_str()?.to_string();
+    let title = [pkg.title, pkg.display].into_iter().find(|t| !t.is_empty()).unwrap_or(file_name);
+    Some(RomFile { path: p.to_path_buf(), system: "x360".into(), title, region: String::new(), size })
+}
+
+/// A PS3 package: a PSN game or an update for one. Its title is only in the encrypted part, so
+/// it's matched to its game by its file name, like a disc image.
+fn identify_ps3_pkg(p: &Path, size: impl FnOnce() -> Option<u64>) -> Option<RomFile> {
+    let size = size()?;
+    ps3_pkg_content_id(&ps3_pkg_header(p)?)?;
+    let title = p.file_stem()?.to_str()?.to_string();
+    Some(RomFile { path: p.to_path_buf(), system: "ps3".into(), title, region: String::new(), size })
+}
+
+/// Disc image types Dolphin writes for both GameCube and Wii games.
+const GC_OR_WII: [&str; 6] = ["iso", "gcm", "rvz", "wia", "wbfs", "ciso"];
+
+/// One file, by its type, then a GameCube or Wii disc image told apart by its header: an .rvz
+/// (or .gcm, .wia...) can hold either console's game, so the file type alone files Wii games as
+/// GameCube ones. Where the header can't be read, what the file type or folder said stays.
+fn identify_with_size(p: &Path, size: impl FnOnce() -> Option<u64>) -> Option<RomFile> {
+    let mut rom = identify_by_type(p, size)?;
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !p.is_file() || !GC_OR_WII.contains(&ext.as_str()) {
+        return Some(rom);
+    }
+    let read = fs::File::open(p).ok().and_then(|mut f| nintendo_disc(&mut f));
+    if let Some((_, console)) = read {
+        rom.system = console.into();
+    }
+    Some(rom)
+}
+
+/// Wii U copies: Cemu's .wua archive, and .wux (compressed) and .wud (raw) disc images.
+const WIIU: [&str; 3] = ["wua", "wux", "wud"];
+
+/// The last bytes of a .wua (Cemu's ZArchive): six section offsets and sizes, a hash, the total
+/// size, the version and this magic, all big-endian.
+const ZARCHIVE_FOOTER: usize = 144;
+const ZARCHIVE_MAGIC: u32 = 0x169F_52D6;
+
+/// The names table of a .wua. Unlike its files, it isn't compressed, and its first names are the
+/// title folders ("000500001012bd00_v16"), so the title IDs are read without unpacking anything.
+fn wua_names(p: &Path) -> Option<Vec<String>> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = fs::File::open(p).ok()?;
+    let len = f.seek(SeekFrom::End(0)).ok()?;
+    let mut foot = [0u8; ZARCHIVE_FOOTER];
+    read_at(&mut f, len.checked_sub(ZARCHIVE_FOOTER as u64)?, &mut foot).ok()?;
+    let be64 = |i: usize| u64::from_be_bytes(foot[i..i + 8].try_into().unwrap());
+    if u32::from_be_bytes(foot[140..144].try_into().unwrap()) != ZARCHIVE_MAGIC {
+        return None;
+    }
+    // The title folders come first, so the start of the table is enough.
+    let (at, size) = (be64(32), be64(40).min(64 * 1024) as usize);
+    let mut table = vec![0u8; size];
+    read_at(&mut f, at, &mut table).ok()?;
+    let mut names = vec![];
+    let mut i = 0usize;
+    while i < table.len() {
+        // A length byte, or two when its top bit is set.
+        let mut n = table[i] as usize;
+        i += 1;
+        if n & 0x80 != 0 {
+            let Some(&low) = table.get(i) else { break };
+            n = ((n & 0x7F) << 8) | low as usize;
+            i += 1;
+        }
+        let Some(name) = table.get(i..i + n) else { break };
+        names.push(String::from_utf8_lossy(name).into_owned());
+        i += n;
+    }
+    Some(names)
+}
+
+/// The Wii U title IDs a .wua holds, upper case: its game's, its update's (0005000E...) and DLC's
+/// (0005000C...), from its title folders' names.
+fn wua_titles(p: &Path) -> Vec<String> {
+    let is_title = |id: &str| id.len() == 16 && id.starts_with("0005") && id.bytes().all(|b| b.is_ascii_hexdigit());
+    let names = wua_names(p).unwrap_or_default();
+    names.iter().filter_map(|n| n.split('_').next()).filter(|id| is_title(id)).map(str::to_ascii_uppercase).collect()
+}
+
+/// The game's title ID for a .wua: its base game's, or, in one holding only an update or DLC, the
+/// game's ID they share (the same low half under 00050000).
+fn wua_title_id(p: &Path) -> Option<String> {
+    let titles = wua_titles(p);
+    if let Some(base) = titles.iter().find(|t| t.starts_with("00050000")) {
+        return Some(base.clone());
+    }
+    titles.first().map(|t| format!("00050000{}", &t[8..]))
+}
+
+/// A Wii U copy, matched by its file name. Each kind is checked by what it starts or ends with, so
+/// a file that merely has the extension isn't taken: a .wua's footer magic, a .wux's "WUX0", a
+/// .wud's product code ("WUP-P-ARDE").
+fn identify_wiiu(p: &Path, ext: &str, size: impl FnOnce() -> Option<u64>) -> Option<RomFile> {
+    let ok = match ext {
+        "wua" => wua_names(p).is_some(),
+        _ => {
+            let mut head = [0u8; 4];
+            read_at(&mut fs::File::open(p).ok()?, 0, &mut head).ok()?;
+            &head == if ext == "wux" { b"WUX0" } else { b"WUP-" }
+        }
+    };
+    if !ok {
+        return None;
+    }
+    let title = p.file_stem()?.to_str()?.to_string();
+    Some(RomFile { path: p.to_path_buf(), system: "wiiu".into(), title, region: String::new(), size: size()? })
+}
+
+/// The names of the files in a zip or 7z, read from its index only: nothing is unpacked. None when
+/// it can't be opened as one (damaged, or a 7z whose index is behind a password).
+fn archive_names(p: &Path, ext: &str) -> Option<Vec<String>> {
+    if ext == "7z" {
+        let archive = sevenz_rust::Archive::open(p).ok()?;
+        return Some(archive.files.iter().filter(|f| !f.is_directory()).map(|f| f.name().to_string()).collect());
+    }
+    let zip = zip::ZipArchive::new(fs::File::open(p).ok()?).ok()?;
+    Some(zip.file_names().filter(|n| !n.ends_with('/')).map(str::to_string).collect())
+}
+
+/// The file type of a name inside an archive, when it's a cartridge ROM's.
+fn rom_ext(name: &str) -> Option<String> {
+    let ext = Path::new(name).extension()?.to_str()?.to_ascii_lowercase();
+    let is_rom = N64.contains(&ext.as_str()) || CART.contains(&ext.as_str());
+    is_rom.then_some(ext)
+}
+
+/// A MAME-style set name ("hopr", "racr2ce", "hopr_x"): short, with no spaces or brackets. A zip
+/// named like a game ("Some Game (USA).zip") with no ROM inside is something else.
+fn is_set_name(stem: &str) -> bool {
+    let ok_chars = stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    !stem.is_empty() && stem.len() <= 20 && ok_chars
+}
+
+/// A zipped game. Most zips aren't games, so one counts only when it holds exactly one cartridge
+/// ROM (its console from that ROM's type), or when it's an arcade set: MAME sets are zips of chip
+/// dumps with no ROM file type, so they're told only by being kept in an arcade folder under the
+/// set's short name.
+fn identify_archive(p: &Path, ext: &str, size: impl FnOnce() -> Option<u64>) -> Option<RomFile> {
+    let names = archive_names(p, ext)?;
+    let roms: Vec<String> = names.iter().filter_map(|n| rom_ext(n)).collect();
+    let stem = p.file_stem()?.to_str()?.to_string();
+    if let [inner] = roms.as_slice() {
+        let system = system_for(inner);
+        return Some(RomFile { path: p.to_path_buf(), system: system.into(), title: stem, region: String::new(), size: size()? });
+    }
+    let arcade_set = roms.is_empty() && !names.is_empty() && folder_kind(p) == "arcade" && is_set_name(&stem);
+    if !arcade_set {
+        return None;
+    }
+    Some(RomFile { path: p.to_path_buf(), system: "arcade".into(), title: stem, region: String::new(), size: size()? })
+}
+
+/// An arcade set is named for its MAME short name ("hopr"), not the game, so it's matched when the
+/// catalog lists that name in the game's copy_ids. The whole name has to be listed: a listed
+/// "hopr" isn't the "hopr2" set.
+fn listed_set(app: &Value, rom: &RomFile) -> bool {
+    if rom.system != "arcade" {
+        return false;
+    }
+    let Some(stem) = rom.path.file_stem().and_then(|s| s.to_str()) else { return false };
+    copy_ids(app).contains(&id_key(stem))
 }
 
 /// Read the title and title ID from the little-endian PSF index and string tables.
@@ -635,6 +1166,11 @@ fn identify_playstation(folder: &Path) -> Option<RomFile> {
             (id.starts_with("BC") || id.starts_with("BL")) && valid_playstation_id(id)
         });
     }
+    // A PSN game, installed or extracted (RPCS3 keeps them in dev_hdd0/game/NPUB30467). Only NP
+    // titles count: a disc game's update installed there has the same layout under its BL/BC ID.
+    if has_file("PARAM.SFO") && has_file("USRDIR/EBOOT.BIN") {
+        return identify_sfo(folder, &game_path(folder, "PARAM.SFO")?, "ps3", |id| id.starts_with("NP") && valid_playstation_id(id));
+    }
     None
 }
 
@@ -698,7 +1234,7 @@ pub fn scan_with(dirs: &[PathBuf], progress: &mut dyn FnMut(usize, usize)) -> Ve
         let marked = entries.iter().any(|e| {
             let n = e.file_name();
             let n = n.to_string_lossy();
-            ["eboot.bin", "ps3_disc.sfb", "base", "exefs"].iter().any(|m| n.eq_ignore_ascii_case(m))
+            ["eboot.bin", "ps3_disc.sfb", "param.sfo", "base", "exefs"].iter().any(|m| n.eq_ignore_ascii_case(m))
         });
         if marked {
             if let Some(game) = identify_playstation(&dir).or_else(|| identify_switch(&dir)) {
@@ -736,7 +1272,7 @@ pub fn scan_with(dirs: &[PathBuf], progress: &mut dyn FnMut(usize, usize)) -> Ve
             }
         }
     }
-    out
+    fold_sets(out)
 }
 
 /// The words in a name, lower case, with the noise taken out: "Zelda - Majora's Mask (USA).z64"
@@ -832,6 +1368,30 @@ pub fn part_of(name: &str) -> Part {
     Part { kind, disc, of }
 }
 
+/// What a found file is to its game. An Xbox 360 package's header says (its name is only a content
+/// ID); any other file's name does.
+pub fn part_of_file(p: &Path) -> Part {
+    if let Some(pkg) = x360_package(p) {
+        return Part { kind: pkg.kind, disc: None, of: None };
+    }
+    // A PS3 update package's content ID usually says so ("UP0082-BLUS31197_00-DOD3PATCH0000101"),
+    // even when its file is only named by that ID.
+    let is_pkg = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pkg"));
+    let pkg = if is_pkg { ps3_pkg_header(p) } else { None };
+    let pkg_patch = pkg.as_ref().and_then(|h| ps3_pkg_content_id(h)).is_some_and(|id| id.to_ascii_uppercase().contains("PATCH"));
+    if pkg_patch {
+        return Part { kind: "update", disc: None, of: None };
+    }
+    // A .wua named "(DLC)" often packs the game with its DLC and update: it's the game when its
+    // title folders include the game's own.
+    let is_wua = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("wua"));
+    if is_wua && wua_titles(p).iter().any(|t| t.starts_with("00050000")) {
+        return Part { kind: "game", disc: None, of: None };
+    }
+    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    part_of(&name)
+}
+
 /// Every found file that belongs to this catalog entry's game: its discs, updates and extra
 /// content, by the same name match as `match_catalog`.
 pub fn files_of(app: &Value, roms: &[RomFile]) -> Vec<RomFile> {
@@ -840,7 +1400,7 @@ pub fn files_of(app: &Value, roms: &[RomFile]) -> Vec<RomFile> {
     if game.is_empty() {
         return vec![];
     }
-    roms.iter().filter(|r| fits(r, origin) && matches(game, r) && fits_copy_ids(app, &r.path).is_ok()).cloned().collect()
+    roms.iter().filter(|r| fits(r, origin) && (matches(game, r) || listed_set(app, r)) && fits_copy_ids(app, &r.path).is_ok()).cloned().collect()
 }
 
 /// A file whose disc ID is one of the catalog's known dumps for this game.
@@ -852,6 +1412,8 @@ pub fn known_dump(app: &Value, p: &Path) -> bool {
 pub fn match_catalog(cat: &Value, roms: &[RomFile]) -> HashMap<String, RomFile> {
     let mut out = HashMap::new();
     let Some(apps) = cat.get("apps").and_then(Value::as_array) else { return out };
+    // Looked at once, not once per game: an update or DLC is named for its game but can't be played.
+    let copies: Vec<&RomFile> = roms.iter().filter(|r| !is_extra_package(r)).collect();
     for a in apps {
         let id = a.get("id").and_then(Value::as_str).unwrap_or("");
         let game = a.get("game").and_then(Value::as_str).unwrap_or("");
@@ -859,10 +1421,11 @@ pub fn match_catalog(cat: &Value, roms: &[RomFile]) -> HashMap<String, RomFile> 
         if id.is_empty() || game.is_empty() {
             continue;
         }
-        let pick = roms
+        let pick = copies
             .iter()
+            .copied()
             .filter(|r| fits(r, origin))
-            .filter(|r| matches(game, r))
+            .filter(|r| matches(game, r) || listed_set(a, r))
             // Its catalog entry lists the discs or cartridges it's made for: one with another ID isn't it.
             .filter(|r| fits_copy_ids(a, &r.path).is_ok())
             // A US dump first: most recomps are built against it.
@@ -1048,11 +1611,343 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A tiny Xbox 360 package header: its magic, content type, game's title ID and names.
+    fn stfs(content_type: u32, title: &str, display: &str) -> Vec<u8> {
+        let mut b = vec![0u8; STFS_HEADER + 0x100];
+        b[..4].copy_from_slice(b"LIVE");
+        b[0x344..0x348].copy_from_slice(&content_type.to_be_bytes());
+        b[0x360..0x364].copy_from_slice(&0x4D53_07E6u32.to_be_bytes());
+        let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>();
+        let (d, t) = (utf16(display), utf16(title));
+        b[0x411..0x411 + d.len()].copy_from_slice(&d);
+        b[0x1691..0x1691 + t.len()].copy_from_slice(&t);
+        b
+    }
+
+    #[test]
+    fn scans_xbox_360_title_updates() {
+        let d = tmp("x360-tu");
+        let p = d.join("4D5307E6/000B0000/7C1C4E5D5C6E2B6F3A8D6E14F2D9A1B3C4E5F60718");
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, stfs(0x000B_0000, "SkyRacer", "")).unwrap();
+        let found = scan(&[d.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].system.as_str(), found[0].title.as_str()), ("x360", "SkyRacer"));
+        assert_eq!(part_of_file(&p).kind, "update");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn scans_xbox_360_dlc() {
+        let d = tmp("x360-dlc");
+        let p = d.join("4D5307E6/00000002/58410A9F0C1D2E3F");
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, stfs(0x0000_0002, "SkyRacer", "Bonus Track Pack")).unwrap();
+        let found = scan(&[d.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "SkyRacer");
+        assert_eq!(part_of_file(&p).kind, "dlc");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn reads_title_update_names_with_a_long_content_id_suffix() {
+        let d = tmp("x360-tu-name");
+        let p = d.join("TU_16L61VP_0000004000000.00000000000G1");
+        fs::write(&p, stfs(0x000B_0000, "SkyRacer", "")).unwrap();
+        assert_eq!(scan(&[d.clone()]).len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ignores_files_without_a_package_magic() {
+        let d = tmp("x360-none");
+        let mut other = stfs(0x000B_0000, "SkyRacer", "");
+        other[..4].copy_from_slice(b"ABCD");
+        fs::write(d.join("0123456789ABCDEF"), other).unwrap();
+        assert!(scan(&[d.clone()]).is_empty());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ignores_other_xbox_360_packages() {
+        let d = tmp("x360-save");
+        fs::write(d.join("0123456789ABCDEF"), stfs(0x0000_0001, "SkyRacer", "")).unwrap();
+        assert!(scan(&[d.clone()]).is_empty());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn packages_say_their_games_title_id() {
+        let d = tmp("x360-id");
+        let p = d.join("0123456789ABCDEF");
+        fs::write(&p, stfs(0x0000_0002, "SkyRacer", "")).unwrap();
+        assert_eq!(copy_id(&p).as_deref(), Some("4D5307E6"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_update_package_is_not_picked_as_the_game() {
+        let d = tmp("x360-pick");
+        fs::write(d.join("0123456789ABCDEF"), stfs(0x000B_0000, "SkyRacer", "")).unwrap();
+        let found = scan(&[d.clone()]);
+        let cat = serde_json::json!({ "apps": [{ "id": "skyracer", "game": "SkyRacer", "origin": "x360" }] });
+        assert!(match_catalog(&cat, &found).is_empty());
+        assert_eq!(files_of(&cat["apps"][0], &found).len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
     fn tmp(n: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("rl-roms-{n}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    fn write_zip(p: &Path, names: &[&str]) {
+        use std::io::Write;
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let mut z = zip::ZipWriter::new(fs::File::create(p).unwrap());
+        for name in names {
+            z.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(&[0u8; 64]).unwrap();
+        }
+        z.finish().unwrap();
+    }
+
+    #[test]
+    fn a_zip_with_one_snes_rom_is_a_snes_copy() {
+        let d = tmp("zip-snes");
+        let p = d.join("SNES/ActRaiser (USA).zip");
+        write_zip(&p, &["ActRaiser (USA).sfc", "readme.txt"]);
+        let found = scan(&[d.clone()]);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].system.as_str(), found[0].title.as_str()), ("snes", "ActRaiser (USA)"));
+    }
+
+    #[test]
+    fn a_zip_with_no_rom_inside_is_ignored() {
+        let d = tmp("zip-none");
+        write_zip(&d.join("Some Game (USA).zip"), &["manual.pdf", "notes.txt"]);
+        let found = scan(&[d.clone()]);
+        let _ = fs::remove_dir_all(&d);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn a_zip_with_two_roms_is_ignored() {
+        let d = tmp("zip-two");
+        write_zip(&d.join("Pack.zip"), &["One.sfc", "Two.sfc"]);
+        let found = scan(&[d.clone()]);
+        let _ = fs::remove_dir_all(&d);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn a_7z_with_one_rom_is_a_copy() {
+        let d = tmp("7z-gba");
+        let src = d.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("Game.gba"), [0u8; 64]).unwrap();
+        let p = d.join("Game.7z");
+        sevenz_rust::compress_to_path(&src, &p).unwrap();
+        let found = identify(&p, 1);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.map(|r| r.system), Some("gba".to_string()));
+    }
+
+    #[test]
+    fn an_arcade_set_in_an_arcade_folder_is_found() {
+        let d = tmp("zip-arcade");
+        let p = d.join("ARCADE/hopr.zip");
+        write_zip(&p, &["963-a23.k8", "963-a24.k10", "963-x22.h22"]);
+        let found = scan(&[d.clone()]);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].system.as_str(), found[0].title.as_str()), ("arcade", "hopr"));
+    }
+
+    #[test]
+    fn an_arcade_set_outside_an_arcade_folder_is_ignored() {
+        // Not named for arcade itself: the temporary folder is one of the folders looked at.
+        let d = tmp("zip-set-elsewhere");
+        write_zip(&d.join("Downloads/hopr.zip"), &["963-a23.k8", "963-a24.k10"]);
+        let found = scan(&[d.clone()]);
+        let _ = fs::remove_dir_all(&d);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn an_arcade_set_is_matched_by_its_listed_set_name() {
+        let set = |name: &str| RomFile { path: PathBuf::from(format!("D:/ROMS/ARCADE/{name}.zip")), system: "arcade".into(), title: name.into(), region: String::new(), size: 1 };
+        let found = vec![set("hopr2"), set("hopr")];
+        let cat = serde_json::json!({ "apps": [{ "id": "hopper-port", "game": "Hopper Arcade", "origin": "arcade", "copy_ids": ["hopr"] }] });
+        let picked = match_catalog(&cat, &found);
+        assert_eq!(picked["hopper-port"].title, "hopr");
+        assert_eq!(files_of(&cat["apps"][0], &found).len(), 1);
+    }
+
+    /// A tiny .wua: a names table holding these names, then the ZArchive footer pointing at it.
+    fn wua(names: &[&str]) -> Vec<u8> {
+        let mut table = vec![];
+        for n in names {
+            table.push(n.len() as u8);
+            table.extend_from_slice(n.as_bytes());
+        }
+        let mut b = vec![0u8; 16];
+        let at = b.len() as u64;
+        b.extend_from_slice(&table);
+        let mut foot = [0u8; ZARCHIVE_FOOTER];
+        foot[32..40].copy_from_slice(&at.to_be_bytes());
+        foot[40..48].copy_from_slice(&(table.len() as u64).to_be_bytes());
+        foot[140..144].copy_from_slice(&ZARCHIVE_MAGIC.to_be_bytes());
+        b.extend_from_slice(&foot);
+        b
+    }
+
+    #[test]
+    fn a_wua_is_a_wii_u_copy() {
+        let d = tmp("wua");
+        let p = d.join("SkyRacer HD (USA).wua");
+        fs::write(&p, wua(&["0005000010143500_v0", "code", "app.xml"])).unwrap();
+        let found = scan(&[d.clone()]);
+        let id = copy_id(&p);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].system, "wiiu");
+        assert_eq!(id.as_deref(), Some("0005000010143500"));
+    }
+
+    #[test]
+    fn a_wua_is_matched_to_its_game_by_name() {
+        let d = tmp("wua-match");
+        fs::write(d.join("SkyRacer HD (USA).wua"), wua(&["0005000010143500_v0"])).unwrap();
+        let found = scan(&[d.clone()]);
+        let _ = fs::remove_dir_all(&d);
+        let cat = serde_json::json!({ "apps": [{ "id": "skyracerhd", "game": "SkyRacer HD", "origin": "wiiu" }] });
+        assert!(match_catalog(&cat, &found).contains_key("skyracerhd"));
+    }
+
+    #[test]
+    fn a_wua_with_only_an_update_says_its_games_id() {
+        let d = tmp("wua-update");
+        let p = d.join("Game Update.wua");
+        fs::write(&p, wua(&["0005000e10143500_v16"])).unwrap();
+        let id = copy_id(&p);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(id.as_deref(), Some("0005000010143500"));
+    }
+
+    #[test]
+    fn a_wua_named_dlc_that_holds_the_game_is_the_game() {
+        let d = tmp("wua-dlc");
+        let p = d.join("HOPPER 3 (USA) (DLC) (v96).wua");
+        fs::write(&p, wua(&["000500001012bd00_v16", "0005000c1012bd00_v16"])).unwrap();
+        let kind = part_of_file(&p).kind;
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(kind, "game");
+    }
+
+    #[test]
+    fn a_wua_without_its_footer_is_ignored() {
+        let d = tmp("wua-bad");
+        fs::write(d.join("Game.wua"), [0u8; 512]).unwrap();
+        let found = scan(&[d.clone()]);
+        let _ = fs::remove_dir_all(&d);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn wux_and_wud_images_are_wii_u_copies() {
+        let d = tmp("wux-wud");
+        let mut wux = vec![0u8; 64];
+        wux[..4].copy_from_slice(b"WUX0");
+        fs::write(d.join("Game A.wux"), wux).unwrap();
+        let mut wud = vec![0u8; 64];
+        wud[..10].copy_from_slice(b"WUP-P-ARDE");
+        fs::write(d.join("Game B.wud"), wud).unwrap();
+        let found = scan(&[d.clone()]);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|r| r.system == "wiiu"));
+    }
+
+    /// A disc image big enough to be scanned (sparse), with a GameCube or Wii header where its
+    /// container keeps it: at 0 for a plain image (no container magic), at 0x58 after an RVZ's or
+    /// WIA's own magic.
+    fn nintendo_image(p: &Path, container: &[u8], magic_at: usize, magic: [u8; 4]) {
+        let mut head = vec![0u8; 0x100];
+        let at = if container.is_empty() { 0 } else { 0x58 };
+        head[..container.len()].copy_from_slice(container);
+        head[at..at + 6].copy_from_slice(b"RHPE01");
+        head[at + magic_at..at + magic_at + 4].copy_from_slice(&magic);
+        fs::write(p, head).unwrap();
+        fs::OpenOptions::new().write(true).open(p).unwrap().set_len(60 * 1024 * 1024).unwrap();
+    }
+
+    const WII_MAGIC: [u8; 4] = [0x5D, 0x1C, 0x9E, 0xA3];
+    const GC_MAGIC: [u8; 4] = [0xC2, 0x33, 0x9F, 0x3D];
+
+    #[test]
+    fn an_rvz_with_a_wii_header_is_wii() {
+        let d = tmp("rvz-wii");
+        let p = d.join("SkyRacer Wii (USA).rvz");
+        nintendo_image(&p, b"RVZ\x01", 0x18, WII_MAGIC);
+        let found = identify(&p, 60 * 1024 * 1024);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.map(|r| r.system), Some("wii".to_string()));
+    }
+
+    #[test]
+    fn an_rvz_with_a_gamecube_header_is_gamecube() {
+        let d = tmp("rvz-gc");
+        let p = d.join("Hopper (USA).rvz");
+        nintendo_image(&p, b"RVZ\x01", 0x1C, GC_MAGIC);
+        let found = identify(&p, 60 * 1024 * 1024);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.map(|r| r.system), Some("gc".to_string()));
+    }
+
+    #[test]
+    fn a_gcm_with_a_wii_header_is_wii() {
+        let d = tmp("gcm-wii");
+        let p = d.join("Party Hop 8 (USA).gcm");
+        nintendo_image(&p, b"", 0x18, WII_MAGIC);
+        let found = identify(&p, 60 * 1024 * 1024);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.map(|r| r.system), Some("wii".to_string()));
+    }
+
+    #[test]
+    fn an_iso_with_a_wii_header_is_wii() {
+        let d = tmp("iso-wii");
+        let p = d.join("Star Hopper M (USA).iso");
+        nintendo_image(&p, b"", 0x18, WII_MAGIC);
+        let found = identify(&p, 60 * 1024 * 1024);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.map(|r| r.system), Some("wii".to_string()));
+    }
+
+    #[test]
+    fn a_wia_with_a_wii_header_is_found_as_wii() {
+        let d = tmp("wia-wii");
+        let p = d.join("No More Heroes (USA).wia");
+        nintendo_image(&p, b"WIA\x01", 0x18, WII_MAGIC);
+        let found = identify(&p, 60 * 1024 * 1024);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.map(|r| r.system), Some("wii".to_string()));
+    }
+
+    #[test]
+    fn an_rvz_whose_header_cant_be_read_keeps_its_file_type_console() {
+        let d = tmp("rvz-unknown");
+        let p = d.join("Some Game.rvz");
+        fs::write(&p, [0u8; 0x100]).unwrap();
+        fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(60 * 1024 * 1024).unwrap();
+        let found = identify(&p, 60 * 1024 * 1024);
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(found.map(|r| r.system), Some("gc".to_string()));
     }
 
     fn rom(order: &str, title: &str, region: u8) -> Vec<u8> {
@@ -1563,6 +2458,288 @@ mod tests {
         assert_eq!(found[0].path, ps3);
         assert_eq!(found[0].system, "ps3");
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// A PARAM.SFO with just a title and a title ID.
+    fn sfo(title: &str, id: &str) -> Vec<u8> {
+        let keys = b"TITLE\0TITLE_ID\0";
+        let title = format!("{title}\0").into_bytes();
+        let id = format!("{id}\0").into_bytes();
+        let mut sfo = b"\0PSF".to_vec();
+        for field in [0x101u32, 52, 52 + keys.len() as u32, 2] {
+            sfo.extend(field.to_le_bytes());
+        }
+        for (key, length, offset) in [(0u16, title.len(), 0), (6, id.len(), title.len())] {
+            sfo.extend(key.to_le_bytes());
+            sfo.extend(0x0204u16.to_le_bytes());
+            for field in [length, length, offset] {
+                sfo.extend((field as u32).to_le_bytes());
+            }
+        }
+        sfo.extend(keys);
+        sfo.extend(title);
+        sfo.extend(id);
+        sfo
+    }
+
+    /// A PS3 game folder laid out the way PSN games are installed: PARAM.SFO and USRDIR/EBOOT.BIN.
+    fn psn_folder(at: &Path, title: &str, id: &str) {
+        fs::create_dir_all(at.join("USRDIR")).unwrap();
+        fs::write(at.join("USRDIR/EBOOT.BIN"), b"").unwrap();
+        fs::write(at.join("PARAM.SFO"), sfo(title, id)).unwrap();
+    }
+
+    #[test]
+    fn scans_psn_game_folders_as_one_ps3_game() {
+        let root = tmp("psn");
+        let game = root.join("dev_hdd0/game/NPUB30467");
+        psn_folder(&game, "Resident Evil Code: Veronica X", "NPUB30467");
+        // Something inside that would be found on its own if the folder were looked through.
+        fs::write(game.join("USRDIR/0123456789ABCDEF"), stfs(0x000B_0000, "SkyRacer", "")).unwrap();
+        let found = scan(&[root.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].system.as_str(), found[0].title.as_str()), ("ps3", "Resident Evil Code: Veronica X"));
+        assert_eq!(found[0].path, game);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_disc_games_update_installed_like_a_psn_game_is_not_a_game() {
+        let root = tmp("psn-update");
+        psn_folder(&root.join("BLUS31197"), "Drakengard 3", "BLUS31197");
+        assert!(scan(&[root.clone()]).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ps3_disc_folders_are_still_found() {
+        let root = tmp("ps3-disc");
+        let disc = root.join("Demons Souls");
+        fs::create_dir_all(disc.join("PS3_GAME/USRDIR")).unwrap();
+        fs::write(disc.join("PS3_DISC.SFB"), b"").unwrap();
+        fs::write(disc.join("PS3_GAME/USRDIR/EBOOT.BIN"), b"").unwrap();
+        fs::write(disc.join("PS3_GAME/PARAM.SFO"), sfo("Demon's Souls", "BLES00932")).unwrap();
+        let found = scan(&[root.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].system.as_str(), found[0].path.as_path()), ("ps3", disc.as_path()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A tiny PS3 package header with this content ID.
+    fn ps3_pkg(content_id: &str) -> Vec<u8> {
+        let mut b = vec![0u8; 0x100];
+        b[..4].copy_from_slice(b"\x7FPKG");
+        b[0x30..0x30 + content_id.len()].copy_from_slice(content_id.as_bytes());
+        b
+    }
+
+    #[test]
+    fn scans_ps3_packages_with_their_title_id() {
+        let d = tmp("ps3-pkg");
+        let p = d.join("Drakengard 3.pkg");
+        fs::write(&p, ps3_pkg("EP0082-BLES01953_00-DOD3000000000001")).unwrap();
+        let found = scan(&[d.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].system.as_str(), found[0].title.as_str()), ("ps3", "Drakengard 3"));
+        assert_eq!(copy_id(&p).as_deref(), Some("BLES01953"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_ps3_patch_package_is_an_update() {
+        let d = tmp("ps3-patch");
+        let p = d.join("UP0082-BLUS31197_00-DOD3PATCH0000101.pkg");
+        fs::write(&p, ps3_pkg("UP0082-BLUS31197_00-DOD3PATCH0000101")).unwrap();
+        assert_eq!(part_of_file(&p).kind, "update");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ignores_pkg_files_without_the_ps3_magic() {
+        let d = tmp("ps4-pkg");
+        let mut ps4 = ps3_pkg("UP0082-CUSA01234_00-SOMEGAME00000001");
+        ps4[..4].copy_from_slice(b"\x7FCNT");
+        fs::write(d.join("Some Game.pkg"), ps4).unwrap();
+        assert!(scan(&[d.clone()]).is_empty());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A raw (2352-byte sector) PlayStation data track: ISO 9660 saying PLAYSTATION, with a
+    /// SYSTEM.CNF whose BOOT line names SLUS_000.67.
+    fn raw_ps1_track() -> Vec<u8> {
+        let sector = |n: usize| n * 2352 + 24;
+        let mut b = vec![0u8; 24 * 2352];
+        let pvd = sector(16);
+        b[pvd + 1..pvd + 6].copy_from_slice(b"CD001");
+        b[pvd + 8..pvd + 19].copy_from_slice(b"PLAYSTATION");
+        b[pvd + 158..pvd + 162].copy_from_slice(&20u32.to_le_bytes());
+        b[pvd + 166..pvd + 170].copy_from_slice(&2048u32.to_le_bytes());
+        let dir = sector(20);
+        b[dir] = 46;
+        b[dir + 2..dir + 6].copy_from_slice(&22u32.to_le_bytes());
+        b[dir + 32] = 12;
+        b[dir + 33..dir + 45].copy_from_slice(b"SYSTEM.CNF;1");
+        let cnf = sector(22);
+        let text = b"BOOT = cdrom:\\SLUS_000.67;1\r\n";
+        b[cnf..cnf + text.len()].copy_from_slice(text);
+        b
+    }
+
+    /// A raw track whose first sector carries a Sega header after its 16-byte sync and address.
+    fn raw_sega_track(magic: &[u8]) -> Vec<u8> {
+        let mut b = vec![0u8; 4 * 2352];
+        b[0x10..0x10 + magic.len()].copy_from_slice(magic);
+        b
+    }
+
+    /// A .cue for one data track and, when given, one music track.
+    fn cue(data: &str, audio: Option<&str>) -> String {
+        let mut s = format!("FILE \"{data}\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n");
+        if let Some(a) = audio {
+            s += &format!("FILE \"{a}\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n");
+        }
+        s
+    }
+
+    #[test]
+    fn a_cue_with_two_bin_tracks_is_one_copy_of_their_size() {
+        let d = tmp("cue-two");
+        fs::write(d.join("Game (Track 1).bin"), raw_ps1_track()).unwrap();
+        fs::write(d.join("Game (Track 2).bin"), vec![0u8; 1000]).unwrap();
+        fs::write(d.join("Game.cue"), cue("Game (Track 1).bin", Some("Game (Track 2).bin"))).unwrap();
+        let found = scan(&[d.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, d.join("Game.cue"));
+        assert_eq!(found[0].size, 24 * 2352 + 1000);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_cues_bin_tracks_are_not_listed() {
+        let d = tmp("cue-bins");
+        fs::write(d.join("Game (Track 1).bin"), raw_ps1_track()).unwrap();
+        fs::write(d.join("Game (Track 2).bin"), vec![0u8; 1000]).unwrap();
+        fs::write(d.join("Game.cue"), cue("Game (Track 1).bin", Some("Game (Track 2).bin"))).unwrap();
+        let found = scan(&[d.clone()]);
+        assert!(found.iter().all(|r| ext_of(&r.path) != "bin"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_disc_image_a_cue_names_is_not_listed_again() {
+        let d = tmp("cue-iso");
+        // Big enough to be found on its own as a disc image; only its length matters here.
+        fs::File::create(d.join("Game.iso")).unwrap().set_len(60 * 1024 * 1024).unwrap();
+        fs::write(d.join("Game.cue"), "FILE \"Game.iso\" BINARY\n  TRACK 01 MODE1/2048\n").unwrap();
+        let found = scan(&[d.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, d.join("Game.cue"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_saturn_and_a_ps1_raw_track_are_told_apart() {
+        let d = tmp("cue-consoles");
+        fs::write(d.join("ps1.bin"), raw_ps1_track()).unwrap();
+        fs::write(d.join("saturn.bin"), raw_sega_track(b"SEGA SEGASATURN")).unwrap();
+        fs::write(d.join("PS1 Game.cue"), cue("ps1.bin", None)).unwrap();
+        fs::write(d.join("Saturn Game.cue"), cue("saturn.bin", None)).unwrap();
+        let mut found: Vec<(String, String)> = scan(&[d.clone()]).into_iter().map(|r| (r.title, r.system)).collect();
+        found.sort();
+        assert_eq!(found, vec![("PS1 Game".to_string(), "ps1".to_string()), ("Saturn Game".to_string(), "saturn".to_string())]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_cue_gives_its_data_tracks_disc_id() {
+        let d = tmp("cue-id");
+        fs::write(d.join("track.bin"), raw_ps1_track()).unwrap();
+        fs::write(d.join("Game.cue"), cue("track.bin", None)).unwrap();
+        assert_eq!(copy_id(&d.join("Game.cue")).as_deref(), Some("SLUS00067"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_cue_finds_its_tracks_in_another_case_and_with_backslashes() {
+        let d = tmp("cue-case");
+        fs::create_dir_all(d.join("tracks")).unwrap();
+        fs::write(d.join("tracks/game.bin"), raw_ps1_track()).unwrap();
+        fs::write(d.join("Game.cue"), cue("Tracks\\GAME.BIN", None)).unwrap();
+        let found = scan(&[d.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].size, 24 * 2352);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_cue_with_a_missing_track_is_still_found() {
+        let d = tmp("cue-missing");
+        let sheet = cue("Game (Track 1).bin", None);
+        fs::write(d.join("Game.cue"), &sheet).unwrap();
+        let found = scan(&[d.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].size, sheet.len() as u64);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_gdi_set_is_one_dreamcast_copy() {
+        let d = tmp("gdi");
+        fs::write(d.join("track01.bin"), vec![0u8; 2352]).unwrap();
+        fs::write(d.join("track02.raw"), vec![0u8; 3000]).unwrap();
+        fs::write(d.join("track 03.bin"), raw_sega_track(b"SEGA SEGAKATANA")).unwrap();
+        let sheet = "3\n1 0 4 2352 track01.bin 0\n2 756 0 2352 track02.raw 0\n3 45000 4 2352 \"track 03.bin\" 0\n";
+        fs::write(d.join("Game.gdi"), sheet).unwrap();
+        let found = scan(&[d.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].path.clone(), found[0].system.as_str()), (d.join("Game.gdi"), "dc"));
+        assert_eq!(found[0].size, 2352 + 3000 + 4 * 2352);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Three discs, each a .cue with one raw PlayStation track, and an .m3u listing them.
+    fn three_disc_set(d: &Path) {
+        for n in 1..=3 {
+            fs::write(d.join(format!("Game (Disc {n}).bin")), raw_ps1_track()).unwrap();
+            fs::write(d.join(format!("Game (Disc {n}).cue")), cue(&format!("Game (Disc {n}).bin"), None)).unwrap();
+        }
+        fs::write(d.join("Game.m3u"), "#EXTM3U\nGame (Disc 1).cue\nGame (Disc 2).cue\nGame (Disc 3).cue\n").unwrap();
+    }
+
+    #[test]
+    fn an_m3u_of_three_discs_is_one_copy() {
+        let d = tmp("m3u");
+        three_disc_set(&d);
+        let found = scan(&[d.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].path.clone(), found[0].system.as_str()), (d.join("Game.m3u"), "ps1"));
+        assert_eq!(found[0].size, 3 * 24 * 2352);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_m3u_keeps_its_disc_order() {
+        let d = tmp("m3u-order");
+        for name in ["a.bin", "b.bin"] {
+            fs::write(d.join(name), raw_ps1_track()).unwrap();
+        }
+        fs::write(d.join("a.cue"), cue("a.bin", None)).unwrap();
+        fs::write(d.join("b.cue"), cue("b.bin", None)).unwrap();
+        fs::write(d.join("Game.m3u"), "b.cue\na.cue\n").unwrap();
+        let set = folded(&d.join("Game.m3u")).unwrap();
+        assert_eq!(set.data, vec![d.join("b.bin"), d.join("a.bin")]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_cue_is_matched_to_its_game() {
+        let d = tmp("cue-match");
+        fs::write(d.join("track.bin"), raw_ps1_track()).unwrap();
+        fs::write(d.join("Some Game (USA).cue"), cue("track.bin", None)).unwrap();
+        let cat = serde_json::json!({ "apps": [{ "id": "some", "game": "Some Game", "origin": "ps1" }] });
+        let found = scan(&[d.clone()]);
+        assert_eq!(match_catalog(&cat, &found).get("some").map(|r| r.path.clone()), Some(d.join("Some Game (USA).cue")));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

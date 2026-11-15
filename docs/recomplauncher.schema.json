@@ -215,7 +215,7 @@
         },
         "label": {
           "type": "string",
-          "description": "What to ask for. Name the region or serial if only one works."
+          "description": "What to ask for. Name the region or serial if only one works. Name .cue, .gdi or .m3u if your game reads that sheet; otherwise a copy kept as one is given as its first data track (.bin)."
         },
         "check": {
           "type": "object",
@@ -231,7 +231,7 @@
             },
             "iso9660": {
               "type": "string",
-              "description": "A file in the top folder of a PS2 (or any ISO 9660) disc image."
+              "description": "A file in the top folder of a PS2 (or any ISO 9660) disc image, in 2048-byte or raw 2352-byte sectors. A .cue, .gdi or .m3u is checked through its data tracks."
             },
             "nup_build_id": {
               "type": "string",
@@ -367,6 +367,87 @@
           "minimum": 1,
           "default": 300,
           "description": "Seconds."
+        },
+        "done": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Files the step leaves when it has finished ({home}, {local}, {install}...). All there: the game counts as set up and plays without the copy unless start uses {game}."
+        },
+        "version": {
+          "type": "string",
+          "description": "Change it only when players who already set up must run this step again (its output format changed, say). Nothing else in this file asks them to."
+        },
+        "options": {
+          "type": "array",
+          "description": "Ticks shown on the setup screen before the step runs. Each one adds its args when it's on. For a vendor's SDK your builder downloads, like NVIDIA's DLSS SDK: the player accepts its license by ticking it.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "label",
+              "args"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9_]+$",
+                "description": "Unique among the options. a-z, 0-9 and _."
+              },
+              "label": {
+                "type": "string",
+                "description": "What the player reads next to the tick."
+              },
+              "note": {
+                "type": "string",
+                "description": "One line under the label."
+              },
+              "args": {
+                "$ref": "#/definitions/args"
+              },
+              "os": {
+                "type": "array",
+                "description": "Shown only on these systems. Every system when left out.",
+                "items": {
+                  "enum": [
+                    "windows",
+                    "linux",
+                    "macos"
+                  ]
+                }
+              },
+              "gpu": {
+                "enum": [
+                  "nvidia",
+                  "amd"
+                ],
+                "description": "Shown only with this brand of graphics card: nvidia means an RTX card, as DLSS needs."
+              },
+              "license": {
+                "type": "object",
+                "description": "What the player accepts by ticking it. With one, the tick starts off.",
+                "required": [
+                  "name",
+                  "url"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string",
+                    "pattern": "^https://",
+                    "description": "Where the player can read it."
+                  }
+                },
+                "additionalProperties": false
+              },
+              "default": {
+                "type": "boolean",
+                "description": "Whether it starts ticked (on when left out). Ignored with a license."
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false

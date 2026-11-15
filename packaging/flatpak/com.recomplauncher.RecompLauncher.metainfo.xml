@@ -61,6 +61,36 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.90.0-beta.53" date="2026-11-15">
+      <description>
+        <p>Easy Setup can be skipped for one game from its menu, or for every game in Settings, and games built from your copy can use a build you already have, wherever it is.</p>
+      </description>
+    </release>
+    <release version="0.90.0-beta.52" date="2026-11-15">
+      <description>
+        <p>Easy Setup shows each game's own cartridge, card or disc with its art, with discs that spin and cartridges that click into place, and optional console labels across the top of covers.</p>
+      </description>
+    </release>
+    <release version="0.90.0-beta.51" date="2026-11-15">
+      <description>
+        <p>Updates keep the setup and lost setups can be relinked, builds made with a developer's own launcher are picked up, ratings for the latest version, cleaner game cards, reasons for recommended versions, a choice of install folder, sign-in for reports, and a single Verified label for checked releases.</p>
+      </description>
+    </release>
+    <release version="0.90.0-beta.50" date="2026-11-14">
+      <description>
+        <p>Xbox 360 achievements found in more places and after a game closes, a way to show the Achievements tab a game's save folder, Discord status only while the launcher is in use, ROM scans for zipped ROMs, arcade sets and Wii U archives, and installed games found next to similarly named sequels.</p>
+      </description>
+    </release>
+    <release version="0.90.0-beta.49" date="2026-11-14">
+      <description>
+        <p>Fixes games asking to be set up again after updating the launcher, finds disc sets kept as .cue, .gdi and .m3u, and fixes setup opening after a game update and the Discord status while the launcher waits in the tray.</p>
+      </description>
+    </release>
+    <release version="0.90.0-beta.48" date="2026-11-14">
+      <description>
+        <p>Setups that keep going in the background and stop cleanly when cancelled, game file scans for Xbox 360 updates and DLC and PS3 packages, a quit option and Scan pill in Big Picture mode, and fixes for small windows, update checks, picked programs, Easy Setup and covers on Linux.</p>
+      </description>
+    </release>
     <release version="0.90.0-beta.47" date="2026-11-14">
       <description>
         <p>A weekly Trending row on Discover, developer names on game pages, a start window with the logo, scroll bars in Big Picture mode, an Auto-Install setting, Arch Linux packages, and fixes for updates, picked programs and handheld animations.</p>

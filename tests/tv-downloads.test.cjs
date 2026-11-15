@@ -15,11 +15,11 @@ function downloadsContext(launcherUpd) {
     tf: (s, values) => s.replace(/\{(\w+)\}/g, (_, k) => values[k]),
     verName: (v) => v,
     backdrop: () => '', bar: () => '', region: (s) => s, pageHead: (s) => s, hints: () => '',
-    libAppOf: (id) => ({ id, name: id }), media: String, scanInfo: () => null, progress: () => '', cleanMsg: String,
+    libAppOf: (id) => ({ id, name: id }), media: String, SCAN_TIP: 'Scanned before release and checked by the RecompStore team.', scanInfo: () => null, progress: () => '', cleanMsg: String,
     sfx: () => {}, calls: [],
   });
   c.selfUpdate = () => c.calls.push('selfUpdate');
-  vm.runInContext(fn(tv, 'pageDownloads'), c);
+  vm.runInContext(fn(tv, 'scanTag') + fn(tv, 'pageDownloads'), c);
   vm.runInContext(fn(tv, 'activate'), c);
   return c;
 }
@@ -41,4 +41,31 @@ test('pressing A on the launcher row starts the same selfUpdate as the desktop',
   const c = downloadsContext({ version: '0.90.0-beta.40' });
   await c.activate({ dataset: { tvact: 'selfupdate', key: 'u:@launcher' }, closest: () => null });
   assert.deepEqual(c.calls, ['selfUpdate']);
+});
+
+function checkedRow(info) {
+  const c = downloadsContext(null);
+  c.S.dlHist = [{ id: 'prime', tag: 'v0.0.11' }];
+  c.scanInfo = () => info;
+  c.thumbOf = String;
+  return c.pageDownloads();
+}
+
+test('a checked download shows the Verified pill and opens the game', () => {
+  const html = checkedRow({ cls: 'ok', ic: '✓', text: 'Verified' });
+  assert.match(html, /<span class="scan-pill ok" title="Scanned before release and checked by the RecompStore team\."><i>✓<\/i>Verified<\/span><\/button>/);
+  assert.match(html, /<small>Installed v0\.0\.11<\/small>/);
+  assert.match(html, /data-go-game="prime"/);
+  assert.doesNotMatch(html, /data-tvact="scan"/);
+});
+
+test('an update-ready row shows how the new version was checked', () => {
+  const c = downloadsContext(null);
+  c.S.library = { prime: { tag: 'v0.0.10' } };
+  c.S.updates = { prime: 'v0.0.11' };
+  const asked = [];
+  c.scanInfo = (h) => { asked.push(h.tag + (h.update ? ' update' : '')); return { cls: 'ok', ic: '✓', text: 'Verified update' }; };
+  const html = c.pageDownloads();
+  assert.deepEqual(asked, ['v0.0.11 update']);
+  assert.match(html, /Update ready: v0\.0\.10 → v0\.0\.11<\/small><\/span><span class="scan-pill ok" title="[^"]+">/);
 });

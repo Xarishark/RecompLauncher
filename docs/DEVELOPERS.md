@@ -153,7 +153,9 @@ What the player sees:
 - `check`: how to tell it's the right game. Use whichever fits:
   - `file`: a file that should be in the folder, like `"default.xex"`.
   - `xdvdfs`: a file on an Xbox 360 disc image.
-  - `iso9660`: a file in the top folder of a PlayStation 2 (or any ISO 9660) disc image.
+  - `iso9660`: a file in the top folder of a PlayStation 2 (or any ISO 9660) disc image. Raw CD
+    sectors (a PlayStation `.bin`) work too, and a `.cue`, `.gdi` or `.m3u` is checked through
+    its data tracks.
   - `nup_build_id`: the build ID of a Nintendo Switch or Switch 2 `.nup` package, e.g. `"e0f3ccfa"` (hex,
     at least 8 digits; a prefix of the full 64-digit ID is fine). It is read from the `exefs/main`
     of the package's newest title, from the table rows leading to it and the first 96 bytes of that
@@ -164,6 +166,19 @@ What the player sees:
 
 The same check is how the launcher finds copies in the player's folders, so a disc image named
 `backup-07.iso` is still found.
+
+**CD games kept as several files.** The launcher finds a `.cue` (with its `.bin` tracks), a `.gdi`
+or an `.m3u` as one copy. If your game reads that sheet, name it in `label`, and `{game}` is the
+sheet. Otherwise `{game}` is the disc's first data track, the `.bin`, so a game that reads single
+disc images still gets one:
+
+```json
+"game": {
+  "kind": "iso",
+  "label": "Your dump of the USA release (SLUS-00797): pick the .cue file, with its .bin tracks beside it.",
+  "check": { "iso9660": "SLUS_007.97" }
+}
+```
 
 Leave `game` out if your recomp finds the game itself.
 
@@ -219,7 +234,7 @@ These fill in anywhere a path, an argument or a value is written:
 | | |
 | --- | --- |
 | `{install}` | Your game's folder |
-| `{game}` | The player's copy (the .iso or the folder) |
+| `{game}` | The player's copy (the .iso or the folder; for a .cue, its .bin unless `label` names .cue) |
 | `{documents}` | Documents |
 | `{local}` | AppData\Local, or ~/.local/share |
 | `{config}` | AppData\Roaming, or ~/.config |
@@ -507,6 +522,48 @@ settings are written. It runs again whenever the player changes their copy.
   text after it shows under the step.
 - Exit with 0 when it worked. Anything else shows as a failed setup, with your exit code.
 - Write what you make to the same place your launcher would, so both stay in step.
+- `"version"` (optional): change it only when players who already set up must run the step again,
+  like when your output format changes. Nothing else in this file makes them set up again.
+- `"done"` (optional): the files the step leaves when it has finished, like
+  `["{home}/Games/YourGame/prepared.bin"]`. When they're all there, the game counts as set up, even
+  when your own launcher built it, and plays without asking for the copy (unless `start` uses
+  `{game}`). If one goes missing, the player is asked to set up again.
+
+#### `prepare.options`: ticks for a vendor's SDK
+
+Some builds need a vendor's SDK at build time, like NVIDIA's DLSS SDK: it's not open source, you
+can't ship it, and the shared `nvidia.dlss` input (a file the game loads) isn't enough because the
+renderer is compiled with it. Give `prepare` an option. The setup screen shows it as a tick, and
+when it's on its `args` are added after the step's own:
+
+```json
+"prepare": {
+  "program": ["LongshotBuilder.exe"],
+  "args": ["--cli", "--prepare", "--game", "{game}"],
+  "options": [
+    {
+      "id": "dlss",
+      "label": "NVIDIA DLSS and frame generation",
+      "note": "Downloads NVIDIA's DLSS SDK during the build.",
+      "gpu": "nvidia",
+      "os": ["windows", "linux"],
+      "args": ["--fetch-ngx-sdk", "--accept-nvidia-license"],
+      "license": { "name": "NVIDIA RTX SDKs license", "url": "https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt" }
+    }
+  ]
+}
+```
+
+- `id` (a-z, 0-9, `_`), `label` and `args` are required. `note` is a line under the label.
+- `os` (`windows`, `linux`, `macos`) and `gpu` (`nvidia`, meaning an RTX card, or `amd`) decide who
+  sees it. Leave them out to show it everywhere.
+- With a `license` (a `name` and an `https` `url`) the tick starts off, and ticking it is the
+  player accepting it. Your args are what pass that on, like `--accept-nvidia-license`: never accept
+  for the player yourself. Without one it starts on, or as `default` says.
+- Your builder gets only these args. The launcher sets no environment variables for it, so keep
+  the SDK in your builder's own folder and put runtime files where the game looks.
+- Print `progress` lines for the download too. If it fails, exit with a code other than 0: the
+  player sees "Its setup step stopped with code N", so put the reason in your own log.
 
 ### `game.dumps`: known good copies
 

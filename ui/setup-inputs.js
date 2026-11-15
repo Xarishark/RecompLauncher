@@ -1,9 +1,27 @@
 // Named Easy Setup inputs. Shared reuse is automatic; requirements come only from the profile.
 // Kept separate from the single-copy flow so existing profiles retain their setup behavior.
+
+// A game's own media on the setup screen (media-art.js): its console's cartridge, card or disc
+// with the game on it, as the site's media design for it says (the catalog's media_design; a
+// game's media is its "Around the web" links). state: 'ghost' (waiting for the player's files),
+// 'is-in' (arriving), 'is-busy' (working), 'is-done' or ''.
+function gameMediaArt(a) {
+  return { cover: a.cover ? media(thumbOf(a.cover, 600)) : '', hero: a.hero ? media(thumbOf(a.hero, 960)) : '', logo: a.logo ? media(a.logo) : '', design: a.media_design && typeof a.media_design === 'object' && !Array.isArray(a.media_design) ? a.media_design : null };
+}
+function gameMediaHtml(a, state) {
+  const kind = MediaArt.kindOf(a.origin);
+  if (state === 'ghost') return MediaArt.ghost(kind);
+  return MediaArt.render(kind, gameMediaArt(a)).replace('<div class="md ', `<div class="md ${state || ''} `);
+}
+function mediaState(m, state) {
+  if (!m || !m.classList.contains('md') || m.classList.contains('md-ghost')) return;
+  m.classList.remove('is-in', 'is-busy', 'is-done');
+  if (state) m.classList.add(state);
+}
 function namedInputRows(su) {
   const rows = (su.inputs || []).filter((r) => r.active);
-  if (su.kind) rows.unshift({ id: 'game', label: su.needs, role: 'game', path: su.copy, file: su.kind !== 'folder', folder: su.kind === 'folder' || su.kind === 'iso_or_folder', extensions: [] });
-  if (su.update) rows.push({ id: 'legacy-update', label: su.update, role: 'update', optional: su.update_optional, path: su.update_copy, file: su.update_file, folder: su.update_folder, extensions: [] });
+  if (su.kind) rows.unshift({ id: 'game', legacy: true, label: su.needs, role: 'game', path: su.copy, file: su.kind !== 'folder', folder: su.kind === 'folder' || su.kind === 'iso_or_folder', extensions: [] });
+  if (su.update) rows.push({ id: 'legacy-update', legacy: true, label: su.update, role: 'update', optional: su.update_optional, path: su.update_copy, file: su.update_file, folder: su.update_folder, extensions: [] });
   return rows;
 }
 function namedDiscSummary(su) {
@@ -13,8 +31,7 @@ function namedDiscSummary(su) {
 }
 function namedInputsShell(id, su, ns = {}, game = {}, tv = false) {
   const selected = namedInputRows(su).some((r) => !r.shared && r.path);
-  const artwork = game.cover ? pic(game.cover) : '';
-  const disc = `<div class="${tv ? 'bigdisc' : 'sdisc'}${selected ? '' : ' ghost'}" aria-hidden="true"><div class="lab">${artwork}</div><div class="sheen"></div><div class="hub"></div><div class="hole"></div></div>`;
+  const disc = `<div class="${tv ? 'tv-media' : 'su-media'}" aria-hidden="true">${gameMediaHtml(game, selected ? '' : 'ghost')}</div>`;
   const summary = `<p class="ni-disc-summary" role="status">${esc(namedDiscSummary(su))}</p>`;
   return tv ? `<div class="ni-tv-layout"><div class="ni-tv-art">${disc}${summary}</div><div class="ni-tv">${namedInputsView(id, su, ns, game)}</div></div>`
     : `<div class="su-in ni-layout"><div class="su-stage ni-art">${disc}<div class="drive"><i></i></div>${summary}</div><div class="su-r ni-content">${namedInputsView(id, su, ns, game)}</div></div>`;
@@ -28,14 +45,14 @@ function namedInputsView(id, su, ns = {}, game = {}) {
     if (r.runtime) return runtimeRow(r, ns);
     const status = r.path ? r.shared ? t('Already configured') : baseName(r.path) : t('Not selected');
     const button = (act, text, extra = '') => `<button type="button" class="btn sm" data-ni="${act}" data-input="${esc(r.id)}" aria-label="${esc(t(text) + ': ' + r.label)}" ${extra} ${ns.busy ? 'disabled' : ''}>${esc(t(text))}</button>`;
-    return `<div class="ni-row${r.path ? ' selected' : ''}"><span class="ni-status" aria-label="${esc(r.path ? t('Selected') : t('Not selected'))}">${r.path ? CHECK : DISC_S}</span><div class="ni-name"><b>${esc(r.label)}</b><span title="${esc(r.shared ? t('Kept on this PC for other games that need them') : r.path || '')}">${esc(status)}</span></div><div class="ni-actions">${r.file ? button('file', r.path ? 'Change' : r.folder ? 'Choose file' : 'Choose') : ''}${r.folder ? button('folder', r.path && !r.file ? 'Change' : 'Choose folder') : ''}${r.path && r.id !== 'game' && r.id !== 'legacy-update' ? button(r.shared ? 'remove-key' : 'clear', 'Remove') : ''}</div></div>`;
+    return `<div class="ni-row${r.path ? ' selected' : ''}"><span class="ni-status" aria-label="${esc(r.path ? t('Selected') : t('Not selected'))}">${r.path ? CHECK : DISC_S}</span><div class="ni-name"><b>${esc(r.label)}</b><span title="${esc(r.shared ? t('Kept on this PC for other games that need them') : r.path || '')}">${esc(status)}</span></div><div class="ni-actions">${r.file ? button('file', r.path ? 'Change' : r.folder ? 'Choose file' : 'Choose') : ''}${r.folder ? button('folder', r.path && !r.file ? 'Change' : 'Choose folder') : ''}${r.path && !r.legacy ? button(r.shared ? 'remove-key' : 'clear', 'Remove') : ''}</div></div>`;
   }).join('')}</div></section>` : '';
   const optional = rows.filter((r) => r.optional || r.runtime), added = optional.filter((r) => r.path).length;
   const optionalLabel = optional.every((r) => r.role === 'dlc') ? t('Optional DLC') : t('Optional content');
   const heading = game.game || game.name;
   const multiple = rows.filter((r) => r.role === 'disc').length > 1;
   return `<div class="ni-heading"><h2>${esc(heading ? tf(multiple ? 'Insert your copies of {game}' : 'Insert your copy of {game}', { game: heading }) : t('Choose your game files'))}</h2><p>${esc(tf('{ready} of {total} required files selected', { ready, total: required.length }))}</p></div>
-    <div class="ni-scroll">${group('Required files', required.filter((r) => !r.shared))}${group('Shared keys', required.filter((r) => r.shared))}${optional.length ? `<div class="ni-optional"><button type="button" class="ni-optional-toggle" data-ni="toggle-optional" aria-expanded="${!!ns.extras}" aria-controls="ni-optional-${esc(id)}"><span>${esc(optionalLabel)} <span class="ni-optional-count">${esc(tf('{added} of {total} added', { added, total: optional.length }))}</span></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><div id="ni-optional-${esc(id)}" ${ns.extras ? '' : 'hidden'}>${group('Optional content', optional)}</div></div>` : ''}</div>
+    <div class="ni-scroll">${relinkCards(su, 'data-ni')}${group('Required files', required.filter((r) => !r.shared))}${group('Shared keys', required.filter((r) => r.shared))}${optional.length ? `<div class="ni-optional"><button type="button" class="ni-optional-toggle" data-ni="toggle-optional" aria-expanded="${!!ns.extras}" aria-controls="ni-optional-${esc(id)}"><span>${esc(optionalLabel)} <span class="ni-optional-count">${esc(tf('{added} of {total} added', { added, total: optional.length }))}</span></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><div id="ni-optional-${esc(id)}" ${ns.extras ? '' : 'hidden'}>${group('Optional content', optional)}</div></div>` : ''}</div>
     ${ns.confirm ? `<div class="ni-notice"><p>${esc(t('Removing shared keys affects every game that uses them. Your original file stays where it is.'))}</p><button type="button" class="btn sm" data-ni="remove-confirm" data-input="${esc(ns.confirm)}">${esc(t('Remove shared keys'))}</button><button type="button" class="btn sm" data-ni="cancel-remove">${esc(t('Keep'))}</button></div>` : ''}
     ${error ? `<p class="su-err" role="alert">${esc(t(error))}</p>` : ''}
     ${typeof prepOptsHtml === 'function' ? prepOptsHtml(su) : ''}
@@ -69,6 +86,37 @@ async function runtimeFetch(id, ns, redraw) {
   catch (e) { ns.dlss = { failed: true }; }
   finally { off(); redraw(); }
 }
+// Use My Previous Setup (Relink): 'ready' when it's set up again, 'build' when the setup step has
+// to run, or { input, label } when one file moved and only it is asked for.
+async function relinkSetup(id) {
+  try { await invoke('setup_relink', { id }); S.setup[id] = await invoke('game_setup', { id }); await refreshState(); return 'ready'; }
+  catch (e) {
+    const m = String(e && e.message ? e.message : e);
+    if (m.startsWith('RELINK_BUILD|')) return 'build';
+    const x = m.match(/^RELINK_MISSING\|([^|]*)\|(.*)$/);
+    if (x) return { input: x[1], label: x[2] };
+    throw e;
+  }
+}
+// The two cards above the setup's own: the files it was set up with, and a build already here.
+function relinkCards(su, attr) {
+  if (!su) return '';
+  const prev = su.previous || [];
+  const card = (act, title, sub, button) => `<div class="found su-relink"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/></svg><div class="k"><b>${esc(t(title))}</b><span title="${esc(sub)}">${esc(sub)}</span></div><button type="button" class="btn sm main" ${attr}="${act}">${esc(t(button))}</button></div>`;
+  return (prev.length && !su.inputs_ready ? card('relink', 'Use My Previous Setup', prev.join(' · '), 'Use It') : '')
+    + (su.prebuilt ? card('prebuilt', 'Use the Build Already on This PC', su.prebuilt, 'Use It') : '')
+    + (su.own_build && !su.prebuilt ? card('ownbuild', 'Use a Build You Already Have', t('Built it before, with the game\'s own launcher or anywhere else? Pick its folder.'), 'Choose Folder') : '');
+}
+// A build the player already has, anywhere (Use a Build You Already Have): its folder picked, and
+// used in place of building it again. True when it's set.
+async function useOwnBuild(id) {
+  const p = await pickFile({ title: t('The folder your build is in'), directory: true });
+  if (!p) return false;
+  await invoke('setup_use_build', { id, folder: typeof p === 'string' ? p : p.path });
+  S.setup[id] = await invoke('game_setup', { id });
+  await refreshState();
+  return true;
+}
 async function namedInputsAction(id, act, input, ns) {
   if (ns.busy) return;
   if (act === 'toggle-optional') { ns.extras = !ns.extras; return; }
@@ -78,6 +126,15 @@ async function namedInputsAction(id, act, input, ns) {
   try {
     const su = S.setup[id], row = namedInputRows(su).find((r) => r.id === input);
     if (act === 'run') return 'run';
+    if (act === 'relink') {
+      const r = await relinkSetup(id);
+      if (r === 'build') return 'run';
+      if (r === 'ready') return 'ready';
+      ns.error = tf('{file} isn\'t where it was. Pick it again, then press Set Up.', { file: r.label });
+      return;
+    }
+    if (act === 'prebuilt') { await invoke('setup_use_build', { id }); S.setup[id] = await invoke('game_setup', { id }); await refreshState(); return 'ready'; }
+    if (act === 'ownbuild') return (await useOwnBuild(id)) ? 'ready' : undefined;
     if (act === 'dlss-off' || act === 'dlss-on') {
       await invoke('dlss_set', { id, input, on: act === 'dlss-on' });
     } else if (act === 'dlss-retry') {
@@ -92,7 +149,8 @@ async function namedInputsAction(id, act, input, ns) {
       const picked = await pickFile(options);
       if (!picked) return;
       const path = typeof picked === 'string' ? picked : picked.path;
-      await invoke(row.id === 'game' ? 'set_game_copy' : row.id === 'legacy-update' ? 'set_update_copy' : 'setup_input_set', { id, input, path });
+      // Only the single-copy rows go to the old commands; a profile's own input may be named "game" too.
+      await invoke(!row.legacy ? 'setup_input_set' : row.id === 'game' ? 'set_game_copy' : 'set_update_copy', { id, input, path });
     }
     S.setup[id] = await invoke('game_setup', { id });
     await refreshState();
@@ -102,6 +160,8 @@ async function namedInputsAction(id, act, input, ns) {
 
 // Desktop and Big Picture share the same rows, requirements and backend actions.
 function namedSetup(id) {
+  const activeJob = S.setupJobs && (S.setupJobs[id] || S.setupJobs[parentId(id)]);
+  if (activeJob) return setupModal(id);
   closeSetup(true);
   Object.assign(SU, { id, stage: 'inputs', step: '', steps: {}, q: [], result: null, err: '', named: {} });
   const scrim = document.createElement('div'); scrim.className = 'scrim';
@@ -126,6 +186,7 @@ function namedSetup(id) {
     const pending = namedInputsAction(id, act, input, SU.named); draw();
     const result = await pending;
     if (SU.el !== scrim) return;
+    if (result === 'ready') { SU.stage = 'ready'; SU.result = { text: t('Your previous setup') }; $('.modal', scrim).classList.remove('ni-modal'); return suDraw(); }
     if (result === 'run') {
       SU.stage = 'run'; SU.step = 'read'; SU.steps = {}; SU.q = []; SU.at = Date.now(); SU.path = ''; $('.modal', scrim).classList.remove('ni-modal'); suDraw();
       try { await invoke('setup_inputs_run', { id }); }
