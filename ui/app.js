@@ -7577,7 +7577,8 @@ function pageRoms() {
   const hidden = all.length - shown.length;
   const more = !firstWithGames || (!hidden && !S.romAllCons) ? '' : S.romAllCons ? t('Only consoles with games') : tn(hidden, '1 more console', '{n} more consoles');
   const moreBtn = more ? `<button type="button" class="rm-con rm-more" data-act="rom-allcons">${esc(more)}</button>` : '';
-  const cons = shown.map((k) => `<button type="button" class="rm-con${k === cur ? ' on' : ''}${counts[k] ? '' : ' none'}" data-act="rom-con" data-k="${esc(k)}" aria-pressed="${k === cur}">${conBadge(k)}<span class="nm">${esc(conName(k))}</span><b class="n">${counts[k] ? fmtNum(counts[k]) : ''}</b></button>`).join('') + moreBtn;
+  // Each console as its name, large; its icon is on the open console's heading.
+  const cons = shown.map((k) => `<button type="button" class="rm-con big${k === cur ? ' on' : ''}${counts[k] ? '' : ' none'}" data-act="rom-con" data-k="${esc(k)}" aria-pressed="${k === cur}"><span class="nm">${esc(conName(k))}</span><b class="n">${counts[k] ? fmtNum(counts[k]) : ''}</b></button>`).join('') + moreBtn;
   const list = romGames(roms.filter((r) => romConsole(r) === cur));
   const note = cur === 'unknown' ? `<p class="rm-note">${esc(t('The launcher couldn\'t tell which game these are. Press Identify to pick it, or put them in their console\'s folder in Games/ROMs and look again.'))}</p>` : '';
   // Kept for the rows' Identify buttons, which say which row by its place in this list.
@@ -7593,23 +7594,48 @@ function pageRoms() {
     // Identify for a row that isn't a known game yet; Change for one the player wants to correct.
     const idLabel = g.game ? t('Change…') : t('Identify…');
     const idBtn = `<button type="button" class="btn sm rm-id" data-act="rom-id" data-i="${i}" title="${esc(t('Pick which game this is'))}">${esc(idLabel)}</button>`;
-    // The game's picture: the icon of one of its recomps; a plain disc when it has none.
+    // The game's picture: a recomp's cover, which is the game's own box art (a recomp's icon is
+    // the project's, often its developer's picture), else that icon; a plain disc when it has none.
+    const withCover = recs.find((a) => a.cover);
     const withIcon = recs.find((a) => a.icon);
-    const icon = withIcon ? pic(thumbOf(withIcon.icon, 96), 'rm-ico') : `<span class="rm-ico ph" aria-hidden="true">${DISC_S}</span>`;
+    const art = withCover ? pic(thumbOf(withCover.cover, 120), 'rm-ico box') : withIcon ? pic(thumbOf(withIcon.icon, 96), 'rm-ico') : '';
+    const icon = art || `<span class="rm-ico ph" aria-hidden="true">${DISC_S}</span>`;
+    const hide = romFilterHides(g.title, cur) ? ' hidden' : '';
     const regions = uniq(copies.map((r) => r.region)).join(', ');
     const bytes = copies.reduce((sum, r) => sum + (Number(r.size) || 0), 0);
     const size = bytes ? fmtB(bytes) : t('Folder');
     // Region and size are their own columns when the list is wide, a line under the name when not.
     const meta = [regions, size].filter(Boolean).map(esc).join(' · ');
-    return `<div class="rm-rom">${icon}<div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}</b><small class="rm-meta">${meta}</small>${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</div>
+    return `<div class="rm-rom" data-q="${esc(romFilterKey(g.title))}"${hide}>${icon}<div class="rm-t"><b title="${esc(g.title)}">${esc(g.title)}</b><small class="rm-meta">${meta}</small>${how ? `<small class="rm-how">${esc(how)}</small>` : ''}</div>
       <div class="rm-copies">${romCopies(copies)}</div><div class="rm-c rm-region">${esc(regions || '–')}</div><div class="rm-c rm-size">${esc(size)}</div><div class="rm-p">${paired}</div>${idBtn}</div>`;
   }).join('');
   // Column names, for the wide table (the narrower layouts put things under the name instead).
   const cols = list.length ? `<div class="rm-cols" aria-hidden="true"><span></span><span>${esc(t('Game'))}</span><span>${esc(t('Copies'))}</span><span class="rm-region">${esc(t('Region'))}</span><span class="rm-size">${esc(t('Size'))}</span><span>${esc(t('Recomps'))}</span><span></span></div>` : '';
   const empty = `<div class="empty rm-empty"><p>${esc(tf('No {console} games found yet.', { console: conName(cur) }))}</p></div>`;
+  // Filters this console's list as the player types; the other consoles are left alone.
+  const q = romFilterText(cur);
+  const filter = list.length ? `<input class="field rm-filter" type="search" data-romq="${esc(cur)}" value="${esc(q)}" placeholder="${esc(t('Filter games'))}" aria-label="${esc(tf('Filter the {console} games', { console: conName(cur) }))}">` : '';
+  const noMatch = `<p class="rm-nomatch"${romFilterNone(list, cur) ? '' : ' hidden'}>${esc(t('No game here matches.'))}</p>`;
   return `<div class="page rm-page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
-    <section class="rm-list" aria-label="${esc(conName(cur))}"><div class="rm-h">${conBadge(cur)}<h2>${esc(conName(cur))}</h2><span>${esc(tn(list.length, '1 game', '{n} games'))}</span></div><div class="rm-rows">${note}${cols}${rows || empty}</div></section></div></div></div>`;
+    <section class="rm-list" aria-label="${esc(conName(cur))}"><div class="rm-h">${conBadge(cur)}<h2>${esc(conName(cur))}</h2><span class="rm-n">${esc(tn(list.length, '1 game', '{n} games'))}</span>${filter}</div><div class="rm-rows">${note}${cols}${rows || empty}${list.length ? noMatch : ''}</div></section></div></div></div>`;
 }
+// The ROM Manager's filter: one per console, so going back to a console finds its list as it was
+// left. A game's name is matched without case, accents or punctuation ("pokemon" finds Pokémon).
+const romFilterKey = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const romFilterText = (con) => (S.romFilter || {})[con] || '';
+const romFilterHides = (title, con) => !romFilterKey(title).includes(romFilterKey(romFilterText(con)));
+const romFilterNone = (list, con) => list.length > 0 && list.every((g) => romFilterHides(g.title, con));
+// Typing in the filter hides rows in place, so the field keeps its focus and caret.
+document.addEventListener('input', (e) => {
+  const el = e.target.closest && e.target.closest('input[data-romq]');
+  if (!el) return;
+  S.romFilter = Object.assign({}, S.romFilter, { [el.dataset.romq]: el.value });
+  const want = romFilterKey(el.value);
+  const rows = [...document.querySelectorAll('.rm-rows .rm-rom')];
+  for (const row of rows) row.hidden = !(row.dataset.q || '').includes(want);
+  const none = document.querySelector('.rm-nomatch');
+  if (none) none.hidden = !rows.every((row) => row.hidden);
+});
 // The ROM Manager opens: matches are loaded once, and a Games/ROMs set up before the console
 // folders existed gets them now.
 async function enterRoms() {

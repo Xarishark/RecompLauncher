@@ -626,6 +626,9 @@ button.prog.su-prog:focus-visible,.prog.su-prog:focus-visible{outline:2px solid 
 .rm-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:-24px}
 .rm-title{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .rm-title h1{font-size:34px}
+/* A console as its name alone, large, in the headline font. */
+.rm-con.big{padding:12px 14px;min-height:50px}
+.rm-con.big .nm{font:800 19px Archivo,Figtree,sans-serif;font-stretch:100%;letter-spacing:-.01em}
 .rm-bug{display:inline-flex;align-items:center;gap:7px}
 /* While it looks through the folders: the busy bar and a running count, above the panels. */
 .rm-scan{display:flex;flex-direction:column;gap:8px;margin-top:-12px}
@@ -667,7 +670,11 @@ button.prog.su-prog:focus-visible,.prog.su-prog:focus-visible{outline:2px solid 
 .rm-list{display:flex;flex-direction:column;gap:6px;min-width:0;min-height:0;container-type:inline-size;container-name:rmlist;padding:16px 16px 8px;border-radius:18px;background:var(--card);border:1px solid var(--line)}
 .rm-h{display:flex;align-items:center;gap:12px;margin-bottom:8px}
 .rm-h h2{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rm-h span:last-child{color:var(--muted);font-size:13.5px;white-space:nowrap}
+.rm-h .rm-n{color:var(--muted);font-size:13.5px;white-space:nowrap}
+/* The filter for this console's games, at the far end of its heading. */
+.rm-filter{margin-left:auto;width:220px;max-width:40%;height:36px;padding:0 14px}
+.rm-rom[hidden],.rm-nomatch[hidden]{display:none}
+.rm-nomatch{color:var(--muted);margin:14px 12px}
 .rm-note{color:var(--muted);margin:0 0 6px}
 /* A table of games: the column names and the rows share one set of columns. */
 .rm-rom,.rm-cols{display:grid;grid-template-columns:44px minmax(160px,2fr) minmax(110px,1fr) 88px 88px minmax(150px,1.4fr) 104px;align-items:center;gap:14px}
@@ -677,6 +684,8 @@ button.prog.su-prog:focus-visible,.prog.su-prog:focus-visible{outline:2px solid 
 .rm-rom:hover{background:var(--card2)}
 .rm-cols{position:sticky;top:0;z-index:1;padding:2px 12px 8px;background:var(--card);font:700 11px Figtree,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
 .rm-ico{width:44px;height:44px;border-radius:10px;object-fit:cover;background:var(--card2)}
+/* A game's box art: upright, like the box. */
+.rm-ico.box{height:58px;border-radius:7px}
 .rm-ico.ph{display:grid;place-items:center;color:var(--dim)}
 .rm-ico.ph svg{width:20px;height:20px}
 .rm-t{display:flex;flex-direction:column;gap:3px;min-width:0}
