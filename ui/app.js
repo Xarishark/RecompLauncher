@@ -7443,20 +7443,25 @@ function romGameKey(r) {
 }
 // The name a row shows: the game's copy with the fewest tags, without them.
 const romShownTitle = (copies) => copies.map((r) => String(r.title || '').replace(/\s*(\([^)]*\)|\[[^\]]*\])/g, '').trim()).filter(Boolean).sort((a, b) => a.length - b.length)[0] || baseName(copies[0].path);
-// An Xbox 360 copy's title ID, which its updates and DLC carry too: "" for other copies.
+// The ID a copy's game shares with its updates and DLC (a Switch game's base ID): "" when the copy
+// says none.
 const romTitleId = (r) => romPart(r).title_id || '';
 // The copies of each game on a console, one entry per game.
 function romGames(list) {
-  // A title ID one copy's known game owns takes every copy with that ID onto the game's row.
+  // Every copy with one ID goes on one row: a known game's, else the row of the game itself (not an
+  // update's), so the row keeps the game's name and other regions still join it by name.
   const idRow = new Map();
-  for (const r of list) {
+  const claim = (r) => {
     const id = romTitleId(r);
-    if (id && romGameOf(r)) idRow.set(id, romGameKey(r));
-  }
+    if (id && !idRow.has(id)) idRow.set(id, romGameKey(r));
+  };
+  list.filter(romGameOf).forEach(claim);
+  list.filter((r) => romPart(r).kind === 'game').forEach(claim);
+  list.forEach(claim);
   const keyOf = (r) => {
     const id = romTitleId(r);
     if (!id || romGameOf(r)) return romGameKey(r);
-    return idRow.get(id) || 'id:' + id;
+    return idRow.get(id);
   };
   const by = new Map();
   for (const r of list) { const k = keyOf(r); if (!by.has(k)) by.set(k, []); by.get(k).push(r); }
