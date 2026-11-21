@@ -1482,8 +1482,9 @@ pub fn part_of_file(p: &Path) -> Part {
     part_of(&name)
 }
 
-/// What the ROM Manager shows of a found file: what it is to its game, and for an Xbox 360 copy the
-/// title ID of its game, so an update or DLC sits with its game whatever the files are called.
+/// What the ROM Manager shows of a found file: what it is to its game, and the ID its game's copies
+/// share (the copy's own ID, or a Switch game's base ID), so an update or DLC sits with its game
+/// whatever the files are called.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CopyPart {
     #[serde(flatten)]
@@ -1492,10 +1493,24 @@ pub struct CopyPart {
 }
 
 pub fn copy_part(r: &RomFile) -> CopyPart {
-    // An Xbox 360 disc image can be found as "xdvdfs" (Xbox or Xbox 360) until its folder says which.
-    let is_360 = matches!(r.system.as_str(), "x360" | "xdvdfs");
-    let title_id = if is_360 { copy_id(&r.path) } else { None };
-    CopyPart { part: part_of_file(&r.path), title_id }
+    let mut part = part_of_file(&r.path);
+    let id = copy_id(&r.path);
+    let is_switch = matches!(r.system.as_str(), "switch" | "switch2");
+    if !is_switch {
+        return CopyPart { part, title_id: id };
+    }
+    let Some(id) = id else { return CopyPart { part, title_id: None } };
+    let Ok(n) = u64::from_str_radix(&id, 16) else { return CopyPart { part, title_id: Some(id) } };
+    // A Switch update is its game's ID + 0x800 and DLC the ID + 0x1000 + n, so the low 13 bits say
+    // which it is, even when the file's name doesn't, and clearing them gives the game's ID back.
+    let low = n & 0x1FFF;
+    if part.kind == "game" && low == 0x800 {
+        part.kind = "update";
+    }
+    if part.kind == "game" && low >= 0x1000 {
+        part.kind = "dlc";
+    }
+    CopyPart { part, title_id: Some(format!("{:016X}", n & !0x1FFF)) }
 }
 
 /// Every found file that belongs to this catalog entry's game: its discs, updates and extra
@@ -1807,11 +1822,56 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_xbox_360_copies_carry_a_title_id() {
-        let d = tmp("x360-only");
+    fn a_copy_that_says_no_id_carries_none() {
+        let d = tmp("no-id");
         fs::write(d.join("Game.z64"), [0x80, 0x37, 0x12, 0x40]).unwrap();
         let rom = RomFile { path: d.join("Game.z64"), system: "n64".into(), title: "Game".into(), region: String::new(), size: 4 };
         assert_eq!(copy_part(&rom).title_id, None);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_ps4_folder_carries_its_title_id() {
+        let d = tmp("ps4-part");
+        ps4_folder(&d.join("Sanctuary"), "Sanctuary", "CUSA00243");
+        let rom = RomFile { path: d.join("Sanctuary"), system: "ps4".into(), title: "Sanctuary".into(), region: String::new(), size: 0 };
+        assert_eq!(copy_part(&rom).title_id.as_deref(), Some("CUSA00243"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_switch_update_carries_its_games_base_id() {
+        let d = tmp("switch-upd-part");
+        let p = d.join("ASTRAL CHAIN v1.0.1.nsp");
+        fs::write(&p, pfs0(&["01007300020fa8000000000000000008.tik"])).unwrap();
+        let rom = RomFile { path: p, system: "switch".into(), title: "ASTRAL CHAIN".into(), region: String::new(), size: 1 };
+        let part = copy_part(&rom);
+        assert_eq!(part.title_id.as_deref(), Some("01007300020FA000"));
+        assert_eq!(part.part.kind, "update");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_switch_dlc_carries_its_games_base_id() {
+        let d = tmp("switch-dlc-part");
+        let p = d.join("Happy Home Paradise.nsp");
+        fs::write(&p, pfs0(&["01006f80023273e80000000000000008.tik"])).unwrap();
+        let rom = RomFile { path: p, system: "switch".into(), title: "Happy Home Paradise".into(), region: String::new(), size: 1 };
+        let part = copy_part(&rom);
+        assert_eq!(part.title_id.as_deref(), Some("01006F8002326000"));
+        assert_eq!(part.part.kind, "dlc");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_switch_game_keeps_its_own_id() {
+        let d = tmp("switch-game-part");
+        let p = d.join("ASTRAL CHAIN.nsp");
+        fs::write(&p, pfs0(&["01007300020fa0000000000000000008.tik"])).unwrap();
+        let rom = RomFile { path: p, system: "switch".into(), title: "ASTRAL CHAIN".into(), region: String::new(), size: 1 };
+        let part = copy_part(&rom);
+        assert_eq!(part.title_id.as_deref(), Some("01007300020FA000"));
+        assert_eq!(part.part.kind, "game");
         let _ = fs::remove_dir_all(&d);
     }
 

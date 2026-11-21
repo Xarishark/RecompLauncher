@@ -1707,7 +1707,7 @@ async fn rom_games(st: State<'_, App>) -> Res<HashMap<String, roms::RomGame>> {
 }
 
 /// For the ROM Manager: what each found file is to its game (the game, a disc of a set, an update
-/// or extra content) and an Xbox 360 copy's title ID, by its path. The scanner's own answer, since
+/// or extra content) and the ID its game's copies share, by its path. The scanner's own answer, since
 /// some files only say in their header (Xbox 360 and PS3 packages, a Wii U .wua that packs the game
 /// with its DLC).
 #[tauri::command]
