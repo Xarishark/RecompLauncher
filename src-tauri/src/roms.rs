@@ -497,6 +497,16 @@ pub fn make_console_folders(root: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// How a ROM folder the launcher set up stands: "missing" when the folder is gone, "fix" when a
+/// console folder in it is (renamed or deleted), "ready" when it's whole.
+pub fn console_folders_state(root: &Path) -> &'static str {
+    if !root.is_dir() {
+        return "missing";
+    }
+    let whole = CONSOLE_FOLDERS.iter().all(|(_, folder)| root.join(folder).is_dir());
+    if whole { "ready" } else { "fix" }
+}
+
 /// The ROM folder the launcher sets up and keeps by console: ~/Games/ROMs.
 pub fn managed_root() -> Option<PathBuf> {
     Some(dirs::home_dir()?.join("Games").join("ROMs"))
@@ -2518,6 +2528,30 @@ pub(crate) mod tests {
         make_console_folders(&d).unwrap();
         assert!(d.join("psx/Driver.cue").is_file());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_whole_roms_folder_is_ready() {
+        let d = tmp("console-ready");
+        make_console_folders(&d).unwrap();
+        assert_eq!(console_folders_state(&d), "ready");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_renamed_console_folder_needs_fixing() {
+        let d = tmp("console-fix");
+        make_console_folders(&d).unwrap();
+        std::fs::rename(d.join("psx"), d.join("PlayStation")).unwrap();
+        assert_eq!(console_folders_state(&d), "fix");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_roms_folder_that_is_gone_is_missing() {
+        let d = tmp("console-gone");
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(console_folders_state(&d), "missing");
     }
 
     #[test]

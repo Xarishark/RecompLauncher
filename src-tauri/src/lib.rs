@@ -9720,16 +9720,14 @@ fn games_rom_folder() -> Res<String> {
     Ok(dir.to_string_lossy().to_string())
 }
 
-/// The console folders inside the launcher's Games/ROMs when it was set up before they existed.
-/// Only that folder, and only once it's in the list: the player's own folders are left as they are.
+/// How ~/Games/ROMs stands, for its button in Settings: "missing" (Create), "fix" when a console
+/// folder in it was renamed or deleted (Fix), "ready" when it's whole; and whether it's in the list
+/// of ROM folders. Nothing is made here: only the player's press does that, by games_rom_folder.
 #[tauri::command(async)]
-fn rom_console_folders(st: State<'_, App>, path: String) -> Res<()> {
-    let p = PathBuf::from(path);
-    let managed = roms::managed_root().is_some_and(|root| root == p);
-    if !managed || !st.lib.lock().unwrap().settings.rom_dirs.contains(&p) {
-        return Err(Error::Msg("That isn't the launcher's ROMs folder.".into()));
-    }
-    roms::make_console_folders(&p).map_err(|_| Error::Msg("Couldn't create the console folders.".into()))
+fn games_rom_state(st: State<'_, App>) -> Res<Value> {
+    let dir = roms::managed_root().ok_or_else(|| Error::Msg("Couldn't find your home folder.".into()))?;
+    let listed = st.lib.lock().unwrap().settings.rom_dirs.contains(&dir);
+    Ok(json!({ "path": dir.to_string_lossy(), "state": roms::console_folders_state(&dir), "listed": listed }))
 }
 
 /// For the page as it starts: a game a link asked for before it was ready, once.
@@ -10454,7 +10452,7 @@ pub fn run() {
             precheck_copy,
             emulator_folders,
             games_rom_folder,
-            rom_console_folders,
+            games_rom_state,
             rom_games,
             rom_parts,
             rom_pair,
