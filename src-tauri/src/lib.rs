@@ -1653,16 +1653,17 @@ fn pc_check() -> manage::PcCheck {
 #[tauri::command]
 async fn scan_roms(app: AppHandle, st: State<'_, App>) -> Res<Vec<roms::RomFile>> {
     let dirs = st.lib.lock().unwrap().settings.rom_dirs.clone();
-    // How far the scan got, for the ROM Manager's progress bar: a few times a second at most, as a
-    // big drive reports every few hundred files.
+    // How far the scan got, for the ROM Manager's circle: a few times a second at most. The first
+    // word, with how many there are in all, always goes, so the circle can start filling.
     let scan = move || {
-        let mut last = std::time::Instant::now();
-        let mut tell = |seen: usize, found: usize| {
-            if last.elapsed() < std::time::Duration::from_millis(150) {
+        let mut last: Option<std::time::Instant> = None;
+        let mut tell = |seen: usize, found: usize, total: usize| {
+            let soon = last.is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(120));
+            if soon {
                 return;
             }
-            last = std::time::Instant::now();
-            let _ = app.emit("rom-scan", json!({ "seen": seen, "found": found }));
+            last = Some(std::time::Instant::now());
+            let _ = app.emit("rom-scan", json!({ "seen": seen, "found": found, "total": total }));
         };
         roms::scan_with(&dirs, &mut tell)
     };

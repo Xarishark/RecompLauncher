@@ -1312,16 +1312,79 @@ fn identify_switch(folder: &Path) -> Option<RomFile> {
 /// Linked folders are looked through once (a link back into a folder already seen is skipped), so
 /// the scan can't go round in circles, and a whole drive of millions of files still ends.
 pub fn scan(dirs: &[PathBuf]) -> Vec<RomFile> {
-    scan_with(dirs, &mut |_, _| {})
+    scan_with(dirs, &mut |_, _, _| {})
 }
 
-/// How often the scan says how far it got: every this many files and folders looked at.
-const PROGRESS_EVERY: usize = 250;
+/// How often the scan says how far it got: every this many files and folders looked at. Often
+/// enough that a small folder still fills its circle smoothly; the app sends a few a second at most.
+const PROGRESS_EVERY: usize = 25;
 
-/// `scan`, telling `progress` how many files and folders it has looked at and how many copies it
-/// found so far, every few hundred, so a big drive shows it's still going.
-pub fn scan_with(dirs: &[PathBuf], progress: &mut dyn FnMut(usize, usize)) -> Vec<RomFile> {
-    const MOST: usize = 1_000_000;
+/// The most files and folders one scan looks at, so a whole drive of millions still ends.
+const SCAN_MOST: usize = 1_000_000;
+
+/// A folder the scan never goes into: hidden ones, node_modules and Windows' own.
+fn skipped_dir(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name.starts_with('.') || name == "node_modules" || name == "windows"
+}
+
+/// A folder with the files that mark an extracted PlayStation or Switch game, which the scan
+/// takes whole rather than looking through.
+fn marks_game(entries: &[fs::DirEntry]) -> bool {
+    entries.iter().any(|e| {
+        let n = e.file_name();
+        let n = n.to_string_lossy();
+        ["eboot.bin", "ps3_disc.sfb", "param.sfo", "base", "exefs"].iter().any(|m| n.eq_ignore_ascii_case(m))
+    })
+}
+
+/// What a folder entry is, a link counted as what it points to (with what it points to, when it is one).
+fn entry_kind(e: &fs::DirEntry) -> Option<(fs::FileType, Option<fs::Metadata>)> {
+    let kind = e.file_type().ok()?;
+    if !kind.is_symlink() {
+        return Some((kind, None));
+    }
+    let target = fs::metadata(e.path()).ok()?;
+    Some((target.file_type(), Some(target)))
+}
+
+/// How many files and folders `scan_with` will look at, by the same walk without reading any file,
+/// so the scan can say how far through it is. It's close rather than exact: a folder that marks a
+/// game counts as nothing, as the scan takes it whole (one that turns out not to be a game is
+/// looked through, so the scan can go a little past this).
+fn count_entries(dirs: &[PathBuf]) -> usize {
+    let mut total = 0usize;
+    let mut been: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut pending: Vec<_> = dirs.iter().rev().cloned().collect();
+    while let Some(dir) = pending.pop() {
+        if !been.insert(fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone())) {
+            continue;
+        }
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        let entries: Vec<fs::DirEntry> = rd.flatten().collect();
+        if marks_game(&entries) {
+            continue;
+        }
+        for e in entries {
+            total += 1;
+            if total >= SCAN_MOST {
+                return SCAN_MOST;
+            }
+            let Some((kind, _)) = entry_kind(&e) else { continue };
+            if kind.is_dir() && !skipped_dir(&e.file_name().to_string_lossy()) {
+                pending.push(e.path());
+            }
+        }
+    }
+    total
+}
+
+/// `scan`, telling `progress` how many files and folders it has looked at, how many copies it found
+/// and about how many there are in all, so the ROM Manager can fill a circle as it goes. The total
+/// comes first (with nothing looked at yet), from a quick walk that only lists the folders.
+pub fn scan_with(dirs: &[PathBuf], progress: &mut dyn FnMut(usize, usize, usize)) -> Vec<RomFile> {
+    let total = count_entries(dirs);
+    progress(0, 0, total);
     let mut out = vec![];
     let mut seen = 0usize;
     let mut been: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
@@ -1334,12 +1397,7 @@ pub fn scan_with(dirs: &[PathBuf], progress: &mut dyn FnMut(usize, usize)) -> Ve
         let entries: Vec<fs::DirEntry> = rd.flatten().collect();
         // An extracted game is one entry, and what's inside it isn't looked through. Only a folder
         // with the files that mark one is checked, so the rest are read once.
-        let marked = entries.iter().any(|e| {
-            let n = e.file_name();
-            let n = n.to_string_lossy();
-            ["eboot.bin", "ps3_disc.sfb", "param.sfo", "base", "exefs"].iter().any(|m| n.eq_ignore_ascii_case(m))
-        });
-        if marked {
+        if marks_game(&entries) {
             if let Some(game) = identify_playstation(&dir).or_else(|| identify_switch(&dir)) {
                 out.push(game);
                 continue;
@@ -1347,24 +1405,17 @@ pub fn scan_with(dirs: &[PathBuf], progress: &mut dyn FnMut(usize, usize)) -> Ve
         }
         for e in entries {
             seen += 1;
-            if seen > MOST {
+            if seen > SCAN_MOST {
                 return out;
             }
             if seen % PROGRESS_EVERY == 0 {
-                progress(seen, out.len());
+                progress(seen, out.len(), total.max(seen));
             }
-            let Ok(mut kind) = e.file_type() else { continue };
-            // A link counts as what it points to.
-            let linked = if kind.is_symlink() { fs::metadata(e.path()).ok() } else { None };
-            if let Some(m) = &linked {
-                kind = m.file_type();
-            }
+            let Some((kind, linked)) = entry_kind(&e) else { continue };
             if kind.is_dir() {
-                let name = e.file_name().to_string_lossy().to_lowercase();
-                if name.starts_with('.') || name == "node_modules" || name == "windows" {
-                    continue;
+                if !skipped_dir(&e.file_name().to_string_lossy()) {
+                    pending.push(e.path());
                 }
-                pending.push(e.path());
                 continue;
             }
             if !kind.is_file() {
@@ -2572,8 +2623,37 @@ pub(crate) mod tests {
             std::fs::write(d.join(format!("note{i}.txt")), b"x").unwrap();
         }
         let mut told = vec![];
-        scan_with(&[d.clone()], &mut |seen, _| told.push(seen));
-        assert_eq!(told, vec![PROGRESS_EVERY, PROGRESS_EVERY * 2]);
+        scan_with(&[d.clone()], &mut |seen, _, _| told.push(seen));
+        assert_eq!(told, vec![0, PROGRESS_EVERY, PROGRESS_EVERY * 2]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_scan_says_how_many_there_are_before_it_starts() {
+        let d = tmp("scan-total");
+        std::fs::create_dir_all(d.join("snes")).unwrap();
+        for i in 0..7 {
+            std::fs::write(d.join(format!("snes/game{i}.sfc")), b"x").unwrap();
+        }
+        let mut first = None;
+        scan_with(&[d.clone()], &mut |seen, _, total| {
+            first.get_or_insert((seen, total));
+        });
+        // The snes folder and the seven files in it.
+        assert_eq!(first, Some((0, 8)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_count_leaves_out_what_the_scan_skips() {
+        let d = tmp("scan-count-skips");
+        std::fs::create_dir_all(d.join(".cache")).unwrap();
+        std::fs::write(d.join(".cache/a.bin"), b"x").unwrap();
+        std::fs::create_dir_all(d.join("Game/USRDIR")).unwrap();
+        std::fs::write(d.join("Game/PARAM.SFO"), b"x").unwrap();
+        std::fs::write(d.join("Game/USRDIR/EBOOT.BIN"), b"x").unwrap();
+        // .cache and Game themselves; nothing inside either.
+        assert_eq!(count_entries(&[d.clone()]), 2);
         let _ = std::fs::remove_dir_all(&d);
     }
 
