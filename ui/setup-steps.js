@@ -143,13 +143,15 @@ function stepsView(id, su, ns, game) {
     head = m.own.filter((r) => r.role === 'disc').length > 1 ? t('Insert your discs') : t('Insert your copy');
     lead = t('Checked once when it\'s set up. After that, you just press Play.');
     // Built again from what its setup step kept: the copy's box stays, for building from it instead.
-    const game = m.own.find((r) => r.legacy && r.id === 'game');
-    if (m.kept && game && !game.path) {
+    const copyRow = m.own.find((r) => r.legacy && r.id === 'game');
+    if (m.kept && copyRow && !copyRow.path) {
       head = t('Build It Again');
       lead = t('Your copy isn\'t needed: it\'s built again from what it kept last time.');
     }
     const one = m.own.length === 1 && (m.own[0].legacy || m.own[0].role === 'game' || m.own[0].role === 'disc');
-    const title = m.own[0] && m.own[0].legacy ? (game.game || name) : m.own[0] ? m.own[0].label : '';
+    // The box names the game on top and says what to choose under it, so an input's label (often
+    // long, with the file name in it) is said once, not twice.
+    const title = game.game || name;
     const main = one ? ssBox(id, su, ns, m.own[0], title) : m.own.length ? `<div class="ss-rows">${m.own.map((r) => ssRow(r, ns)).join('')}</div>` : '';
     const keys = m.keys.length ? `<div><p class="ss-cap">${esc(t('Keys'))} <i>${esc(t('kept once on this PC, for every game that needs them'))}</i></p><div class="ss-rows">${m.keys.map((r) => ssRow(r, ns)).join('')}</div></div>` : '';
     body = main + keys + ssAlt(su, ns, name);
@@ -187,7 +189,7 @@ function stepsView(id, su, ns, game) {
   const back = m.steps.length > 1 ? `<button type="button" class="btn big${m.at ? '' : ' ghost'}" data-ss="back"${m.at ? '' : ' tabindex="-1" aria-hidden="true" disabled'}>${esc(t('Back'))}</button>` : '';
   const next = m.last ? `<button type="button" class="btn main big" data-ss="run"${m.blocked ? ' disabled' : ''}>${esc(ns.busy ? t('Working…') : t('Set Up'))}</button>`
     : `<button type="button" class="btn main big" data-ss="next"${m.cur.id === 'game' && (m.missing.length || m.broken) ? ' disabled' : ''}>${esc(t('Next'))}</button>`;
-  return `<div class="ss-head"><span class="kick">${esc(t('Set up'))} · ${esc(name)}</span>${rail}<h2>${esc(head)}</h2><p>${esc(lead)}</p></div>
+  return `<div class="ss-head"><span class="kick">${esc(t('Easy Setup'))} · ${esc(name)}</span>${rail}<h2>${esc(head)}</h2><p>${esc(lead)}</p></div>
     <div class="ss-scroll">${body}${notice}${error ? `<p class="su-err" role="alert">${esc(t(error))}</p>` : ''}</div>
     <div class="ss-foot">${back}<p class="why" role="status">${ok ? CHECK : ''}${esc(status)}</p>${next}</div>`;
 }

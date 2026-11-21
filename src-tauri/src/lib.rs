@@ -1827,14 +1827,24 @@ async fn copy_files(st: State<'_, App>, id: String, picked: Option<String>, drop
 fn support_local(st: State<'_, App>, id: String) -> Option<Value> {
     let dir = st.lib.lock().unwrap().installed.get(&id).map(|g| g.path.clone())?;
     let p = profile::release_profile(&dir)?.profile;
+    Some(profile_covers(&p))
+}
+
+/// Each Launcher Support feature a recomplauncher.json sets up itself.
+fn profile_covers(p: &profile::Profile) -> Value {
     let game = p.game.as_ref();
-    Some(json!({
-        "easy_setup": game.is_some(),
+    // The player's copy asked for through named inputs (no `game` block) is Easy Setup too: a
+    // required input of role game or disc that isn't a shared key. The site counts it the same way
+    // (rs_sdk_easy), so the card agrees with the catalog.
+    let copy_input = p.inputs.iter().any(|i| !i.optional && i.shared.is_empty() && (i.role == "game" || i.role == "disc"));
+    let easy_setup = game.is_some() || copy_input;
+    json!({
+        "easy_setup": easy_setup,
         "settings": !p.settings.is_empty(),
         "prepare": p.prepare.is_some(),
         "verified": game.map(|g| !g.dumps.is_empty() || !g.check.ids.is_empty()).unwrap_or(false),
         "saves": !p.saves.is_empty(),
-    }))
+    })
 }
 
 // ---------- the launcher's own file browser ----------
@@ -2347,23 +2357,55 @@ struct GameArt {
     icon: Option<PathBuf>,
 }
 
-async fn game_art(st: &App, id: &str, g: &Installed) -> GameArt {
+/// The catalog entry a game's pictures come from: its own, or for one game of several the recomp's
+/// with that game's own pictures over it.
+async fn art_entry(st: &App, id: &str, pk: Option<&GamePick>) -> Value {
     let cat = catalog::catalog(&st.http, &st.dir, false).await.map(|f| f.data).unwrap_or(Value::Null);
+    match pk {
+        Some(pk) => games::with_game_art(catalog::app(&cat, &pk.recomp).unwrap_or(&Value::Null), &pk.game),
+        None => catalog::app(&cat, id).cloned().unwrap_or(Value::Null),
+    }
+}
+
+/// Show Game Names: recomps show their game's pictures, not their project's (catalog::art_url).
+fn game_names_on(st: &App) -> bool {
+    st.lib.lock().unwrap().settings.ui.get("game_names").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// The catalog's icon for a game, kept in the covers folder: the file its desktop shortcut and Steam
+/// entry point at. Fetched again when the picture it should be changes (Show Game Names, a new one
+/// from the website) and written over in place, so those shortcuts change with it. One that can't
+/// be fetched stays as it was.
+async fn list_icon(st: &App, id: &str, url: &str) -> Option<PathBuf> {
+    let covers = st.dir.join("covers");
+    let file = covers.join(format!("{}-icon-list.png", folder_name(id)));
+    let from = file.with_extension("from");
+    let kept = std::fs::read_to_string(&from).unwrap_or_default();
+    if file.is_file() && kept == url {
+        return Some(file);
+    }
+    let b = fetch_bytes(&st.http, url).await;
+    if crate::media::mime(&b) == "image/png" {
+        let _ = std::fs::create_dir_all(&covers);
+        let _ = std::fs::write(&file, &b);
+        let _ = std::fs::write(file.with_extension("ico"), art::ico_from_png(&b));
+        let _ = std::fs::write(&from, url);
+    } else if !b.is_empty() {
+        // Not a picture shortcuts can use: the other set's old one would be wrong, the program's is not.
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(file.with_extension("ico"));
+        let _ = std::fs::remove_file(&from);
+    }
+    Some(file).filter(|f| f.is_file())
+}
+
+async fn game_art(st: &App, id: &str, g: &Installed) -> GameArt {
     // One game of several: its own pictures from the catalog, else the recomp's. The player's own
     // (Customize) are the recomp's, so they're left for the recomp.
     let sel = game_of(st, id);
-    let a = match &sel {
-        Some(pk) => {
-            let mut a = catalog::app(&cat, &pk.recomp).cloned().unwrap_or_else(|| json!({}));
-            for (k, v) in [("cover", &pk.game.cover), ("hero", &pk.game.hero), ("logo", &pk.game.logo), ("icon", &pk.game.icon)] {
-                if !v.is_empty() {
-                    a[k] = json!(if v.starts_with('/') { format!("{}{}", catalog::base(), v) } else { v.clone() });
-                }
-            }
-            a
-        }
-        None => catalog::app(&cat, id).cloned().unwrap_or(Value::Null),
-    };
+    let a = art_entry(st, id, sel.as_ref()).await;
+    let game_only = game_names_on(st);
+    let url = |kind: &str| catalog::art_url(&a, kind, game_only).to_string();
     let plain;
     let g = match &sel {
         Some(_) => {
@@ -2379,26 +2421,15 @@ async fn game_art(st: &App, id: &str, g: &Installed) -> GameArt {
         }
         (fetch_bytes(&st.http, url).await, ext_of(url))
     }
-    let cover = pick(st, g.cover_file.as_ref(), str_of(&a, "cover")).await;
-    let hero = pick(st, g.hero_file.as_ref(), str_of(&a, "hero")).await;
-    let logo = pick(st, g.logo_file.as_ref(), str_of(&a, "logo")).await;
-    // The icon: the player's, else the list's (kept once in the covers folder), else (Windows) the
+    let cover = pick(st, g.cover_file.as_ref(), &url("cover")).await;
+    let hero = pick(st, g.hero_file.as_ref(), &url("hero")).await;
+    let logo = pick(st, g.logo_file.as_ref(), &url("logo")).await;
+    // The icon: the player's, else the list's (kept in the covers folder), else (Windows) the
     // game's program.
     let mut icon = g.icon_file.clone().filter(|f| f.is_file());
-    if icon.is_none() {
-        let url = str_of(&a, "icon");
-        if !url.is_empty() {
-            let file = st.dir.join("covers").join(format!("{}-icon-list.png", folder_name(id)));
-            if !file.is_file() {
-                let b = fetch_bytes(&st.http, url).await;
-                if crate::media::mime(&b) == "image/png" {
-                    let _ = std::fs::create_dir_all(st.dir.join("covers"));
-                    let _ = std::fs::write(&file, &b);
-                    let _ = std::fs::write(file.with_extension("ico"), art::ico_from_png(&b));
-                }
-            }
-            icon = Some(file).filter(|f| f.is_file());
-        }
+    let icon_url = url("icon");
+    if icon.is_none() && !icon_url.is_empty() {
+        icon = list_icon(st, id, &icon_url).await;
     }
     let icon = match icon {
         Some(p) if cfg!(windows) => Some(Some(p.with_extension("ico")).filter(|i| i.is_file()).unwrap_or(p)),
@@ -2456,6 +2487,34 @@ async fn steam_art(st: &App, id: &str, g: &Installed) -> (Vec<(&'static str, Vec
     let icon = ga.icon.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
     let art = vec![("p", ga.cover.0, ga.cover.1), ("_hero", ga.hero.0, ga.hero.1), ("", wide.0, wide.1), ("_logo", ga.logo.0, ga.logo.1)];
     (art, icon)
+}
+
+/// Settings → Show Game Names changed which set of pictures recomps show: the desktop shortcuts and
+/// Steam entries already made get the new set too. A desktop shortcut points at the game's icon
+/// file, which list_icon writes over in place; Steam's pictures are written again in its grid
+/// folders. How many Steam entries changed.
+#[tauri::command]
+async fn refresh_shortcut_art(st: State<'_, App>) -> Res<usize> {
+    let game_only = game_names_on(&st);
+    let installed: Vec<(String, Installed)> = st.lib.lock().unwrap().installed.iter().map(|(k, g)| (k.clone(), g.clone())).collect();
+    let mut ids = vec![];
+    for (rid, g) in &installed {
+        ids.push(rid.clone());
+        ids.extend(games_of(&st, rid, g).iter().map(|x| games::full(rid, &x.id)));
+    }
+    for id in &ids {
+        // Only the games with a kept icon: the ones a shortcut or Steam entry was made for.
+        let kept = st.dir.join("covers").join(format!("{}-icon-list.png", folder_name(id)));
+        if !kept.is_file() {
+            continue;
+        }
+        let a = art_entry(&st, id, game_of(&st, id).as_ref()).await;
+        let url = catalog::art_url(&a, "icon", game_only);
+        if !url.is_empty() {
+            list_icon(&st, id, url).await;
+        }
+    }
+    Ok(steam_sync::refresh_art(&st).await)
 }
 
 /// Add the game to Steam. If Steam is open and `restart` is false, nothing changes and the answer
@@ -9679,26 +9738,6 @@ fn open_link(app: &AppHandle, id: String) {
     let _ = app.emit("open-game", id);
 }
 
-/// Easy Install, before the download: is this the copy the game needs? The same checks its setup
-/// runs (kind of file, disc and version), from the catalog's setup for it, so a wrong copy is found
-/// now instead of after the download.
-#[tauri::command(async)]
-fn precheck_copy(st: State<'_, App>, id: String, path: String) -> Res<String> {
-    let p = PathBuf::from(&path);
-    if !p.exists() {
-        return Err(Error::Msg("That file isn't there anymore.".into()));
-    }
-    let cat = cached_catalog(&st);
-    let entry = catalog::app(&cat, &id).cloned().unwrap_or(Value::Null);
-    // Nothing is installed yet, so only the catalog's setup counts (a folder that isn't there).
-    let none = st.dir.join("precheck").join(&id);
-    let prof = profile::find(&none, str_of(&entry, "repo"), &entry).ok_or_else(|| Error::Msg("This game's copy can only be checked once it's installed.".into()))?;
-    let g = prof.game.as_ref().filter(|_| prof.inputs.is_empty()).ok_or_else(|| Error::Msg("This game's copy can only be checked once it's installed.".into()))?;
-    profile::check_copy(g, &p).map_err(Error::Msg)?;
-    roms::fits_copy_ids(&entry, &p).map_err(|found| Error::Msg(format!("That copy reads as {found}, and this recomp is made for another version of the game.")))?;
-    Ok(p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
-}
-
 /// The game folders the player's emulators know about, that aren't among their game folders yet.
 #[tauri::command(async)]
 fn emulator_folders(st: State<'_, App>) -> Vec<emus::Found> {
@@ -10450,7 +10489,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             take_link, ui_ready, pause, download_limits, installer::installer_run, installer::installer_cancel, installer::installer_check, installer::installer_done,
-            precheck_copy,
             emulator_folders,
             games_rom_folder,
             games_rom_state,
@@ -10491,10 +10529,10 @@ pub fn run() {
             take_options_asked,
             get_state, get_catalog, get_releases, net_state, check_updates, launcher_update, install, cancel, uninstall, play, stop, set_exe, forget_program, set_setup_mode, open_folder,
             save_settings, set_start_at_login, list_monitors, prepare_tv_mode, leave_tv_mode, open_url, libraries, move_game, game_sizes, game_size, backups, backup_now, restore_backup, pc_check, set_ui_scale, update_retry, ge_proton_install, proton_now, repo_readme, install_vcredist, scan_roms, rom_matches, copy_files, support_local,
-            desktop_shortcut, open_app_control, fs_paste, portable_info, make_portable, add_to_steam, launcher_to_steam, steam_sync::steam_sync_now, steam_sync::steam_sync_state, steam_sync::steam_remove_all, recent_log, screenshots, open_shots, overlay_action, overlay_state, is_handheld, skip_backup, set_cover, art::art_source, art::art_open, art::art_save, art::art_search, art::art_for, all_screenshots, delete_screenshot,
+            desktop_shortcut, refresh_shortcut_art, open_app_control, fs_paste, portable_info, make_portable, add_to_steam, launcher_to_steam, steam_sync::steam_sync_now, steam_sync::steam_sync_state, steam_sync::steam_remove_all, recent_log, screenshots, open_shots, overlay_action, overlay_state, is_handheld, skip_backup, set_cover, art::art_source, art::art_open, art::art_save, art::art_search, art::art_for, all_screenshots, delete_screenshot,
             copy_screenshot, show_screenshot, controllers, prefetch_images, versions, build_check, news, game_info, mods_state, mods_online,
             mod_install, mod_remove, open_mods, send_report, beta_feedback, game_programs, run_program, game_root, boot::boot_builtin, update_launcher, resume_game, game_setup, set_game_copy, free_up_space, move_build, set_update_copy, set_game_setting, set_game_slider, set_game_binding, reset_game_bindings, usage::report_preview, usage::profile_report, usage::my_reports, usage::report_reply,
-            recomp_games, adopt::move_listing, update_info, set_proxy, umu_repair, dlss_fetch, dlss_set, dlss_state, dlss_remove, cloud::library_pull, cloud::library_push, cloud::playtime_push, cloud::playtime_pull, cloud::saves_open_backups, game_action, setup_copy, setup_cancel, setup_status, setup_begin, setup_end, setup_input_set, setup_key_remove, setup_inputs_run, setup_use_build, easy_setup, set_game_options,
+            recomp_games, adopt::move_listing, update_info, set_proxy, umu_repair, dlss_fetch, dlss_set, dlss_state, dlss_remove, cloud::library_pull, cloud::library_push, cloud::playtime_push, cloud::playtime_pull, cloud::spons_mine, cloud::spons_seen, cloud::saves_open_backups, game_action, setup_copy, setup_cancel, setup_status, setup_begin, setup_end, setup_input_set, setup_key_remove, setup_inputs_run, setup_use_build, easy_setup, set_game_options,
             set_prepare_opts,
             convert_plan,
             convert_copy,
@@ -10527,6 +10565,28 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn launcher_support_counts_named_inputs_without_a_game_block_as_easy_setup() {
+        let p: crate::profile::Profile = serde_json::from_value(serde_json::json!({
+            "format": 1,
+            "inputs": [{ "id": "jar", "label": "Your copy", "role": "game", "formats": [{ "type": "file", "extensions": ["jar"] }] }],
+            "start": { "program": ["game.exe"], "args": ["--game", "{input:jar}"] }
+        }))
+        .unwrap();
+        assert_eq!(super::profile_covers(&p)["easy_setup"], true);
+    }
+
+    #[test]
+    fn launcher_support_does_not_count_optional_named_inputs_alone_as_easy_setup() {
+        let p: crate::profile::Profile = serde_json::from_value(serde_json::json!({
+            "format": 1,
+            "inputs": [{ "id": "dlc", "label": "Extra levels", "role": "dlc", "optional": true }],
+            "start": { "program": ["game.exe"] }
+        }))
+        .unwrap();
+        assert_eq!(super::profile_covers(&p)["easy_setup"], false);
+    }
 
     #[test]
     fn the_catalogs_xbox_360_title_id_is_used_first_and_in_capitals() {
