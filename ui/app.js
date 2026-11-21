@@ -4535,6 +4535,30 @@ function selfUpdatesGroup(group, row, sw, ui) {
   const news = row(t('Show What\'s New After an Update'), t('A small card the first time a new version opens. Off: the notes stay in Settings → Changelog.'), sw('whats_new_off', !ui.whats_new_off, t('Show What\'s New After an Update'), 'ui-toggle'));
   return group(t('RecompLauncher Updates'), check + auto + news);
 }
+// The launcher's own ROM folder, Games/ROMs: Create while it isn't there, Ready (nothing to press)
+// while it's whole and listed, Fix once a console folder in it was renamed or deleted. Asked again
+// each time Settings draws it, at most every few seconds, so a change made in the file manager shows.
+function gamesRomRow(row) {
+  const fresh = S.gamesRomAt && Date.now() - S.gamesRomAt < 3000;
+  if (!fresh) {
+    S.gamesRomAt = Date.now();
+    invoke('games_rom_state').then((v) => {
+      const same = JSON.stringify(v) === JSON.stringify(S.gamesRom);
+      S.gamesRom = v;
+      if (!same && S.view === 'settings' && S.setTab === 'library') setSection('library', false);
+    }).catch(() => {});
+  }
+  const g = S.gamesRom;
+  if (!g) return '';
+  const ready = g.state === 'ready' && g.listed;
+  const label = g.state === 'missing' ? t('Create') : g.state === 'fix' ? t('Fix') : ready ? t('Ready') : t('Add');
+  const said = g.state === 'missing' ? t('A folder for each console, to drop your ROMs and disc images in. The launcher knows a game\'s console by the folder it\'s in.')
+    : g.state === 'fix' ? t('A console folder in it was renamed or deleted. Fix makes the missing ones again; your files stay where they are.')
+    : ready ? t('Each console has its folder. Drop your ROMs and disc images in their console\'s folder.')
+    : t('It\'s there, but the launcher doesn\'t look in it yet.');
+  const btn = `<button type="button" class="btn sm${ready ? '' : ' main'}" data-act="rom-games"${ready ? ' disabled' : ''}>${esc(label)}</button>`;
+  return row(t('Games/ROMs'), said, btn);
+}
 // The shared NVIDIA DLSS file, when the launcher keeps one: removing it affects every game that uses it.
 function dlssGroup(group, row) {
   if (S.dlssState === undefined) { S.dlssState = null; invoke('dlss_state').then((v) => { S.dlssState = v; if (S.view === 'settings' && S.setTab === 'library') setSection('library', false); }).catch(() => {}); }
@@ -4652,7 +4676,7 @@ function pageSettings() {
         `<button type="button" class="btn sm" data-act="lib-add">${esc(t('Add a folder'))}</button>`)
         + group(t('Installing'), row(t('Ask Where to Install'), t('Pick the folder for each new game when you install it, Easy Install too. Off: new games go to the default library.'), sw('ask_where', ui.ask_where, t('Ask Where to Install'), 'ui-toggle'))
           + row(t('Skip Easy Setup'), t('Every game installs as it comes, and its own installer or launcher sets it up. To skip it for one game only, use Skip Easy Setup on its setup window, or the Easy Setup switch in its Manage tab.'), sw('easy_skip_all', ui.easy_skip_all, t('Skip Easy Setup'), 'ui-toggle')))
-        + group(t('Where do you keep your ROMs?'), `<p class="set-note">${esc(t('Point the launcher at your ROMs, disc images and game backups. It shows which have recomps, sets them up with your copy, and lets you know when a new recomp comes out for one. Files are only read on this PC.'))}</p>
+        + group(t('Where do you keep your ROMs?'), `<p class="set-note">${esc(t('Point the launcher at your ROMs, disc images and game backups. It shows which have recomps, sets them up with your copy, and lets you know when a new recomp comes out for one. Files are only read on this PC.'))}</p>${gamesRomRow(row)}
         ${(st.rom_dirs || []).length ? (st.rom_dirs || []).map((d) => `<div class="set-row"><div class="k"><b class="path">${esc(d)}</b><span>${esc(folderCounts(d))}</span></div><div class="acts"><button type="button" class="btn sm" data-act="folder" data-path="${esc(d)}">${esc(t('Open'))}</button><button type="button" class="btn sm danger" data-act="rom-remove" data-path="${esc(d)}">${esc(t('Remove'))}</button></div></div>`).join('') : `<p class="set-empty">${esc(t('No folders yet.'))}</p>`}
         ${nOwned ? `<p class="set-foot">${esc(tn(nOwned, '1 of your games has a recomp.', '{n} of your games have recomps.'))} <a href="#" data-go="home">${esc(t('See them on Home'))}</a></p>` : ''}`,
         `<span class="acts"><button type="button" class="btn sm" data-act="rom-scan">${esc(t('Look again'))}</button><button type="button" class="btn sm" data-act="rom-emus">${esc(t('From My Emulators'))}</button><button type="button" class="btn sm main" data-act="rom-add">${esc(t('Add a folder'))}</button></span>`)
@@ -7563,14 +7587,14 @@ function pageRoms() {
   const keepPick = all.includes(S.romCon) && (S.romConPicked || counts[S.romCon] || !firstWithGames);
   if (!keepPick) S.romCon = firstWithGames || all[0] || '';
   const cur = S.romCon;
-  const setup = dirs.some(isGamesRoms) ? '' : `<button type="button" class="btn main" data-act="rom-games" title="${esc(t('A folder for each console in Games/ROMs. Put your ROMs and disc images in their console\'s folder.'))}">${esc(t('Set Up Games/ROMs'))}</button>`;
   // It's a beta: said beside the title, with a way to tell us what went wrong at the top right.
   const bug = `<button type="button" class="btn sm rm-bug" data-act="rom-bug" title="${esc(t('Opens a new issue on RecompLauncher\'s GitHub, filled in with your launcher version and system'))}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7.5V6a3 3 0 0 1 6 0v1.5"/><rect x="7" y="7.5" width="10" height="12" rx="5"/><path d="M12 11v8.5M4 13h3M17 13h3M5 8.5l2.5 1.5M19 8.5 16.5 10M5 18.5l2.5-1.5M19 18.5 16.5 17"/></svg>${esc(t('Report a bug'))}</button>`;
-  // The title, its Beta tag and Report a bug share the top line, so the bug button stays at the
-  // top right however the text and the buttons under it wrap.
-  const head = `<div class="rm-top"><div class="rm-title"><h1>${esc(t('ROM Manager'))}</h1><span class="bh-tag">${esc(t('Beta'))}</span></div>${bug}</div><div class="head"><div><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div>
-    <div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan"${S.romScan ? " disabled" : ""}>${esc(t('Look again'))}</button>` : ''}</div></div>${romScanBar()}`;
-  if (!dirs.length) return `<div class="page">${head}<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg><h2>${esc(t('No ROM folders yet'))}</h2><p>${esc(t('Set up Games/ROMs and put each game in its console\'s folder, or add a folder you already have.'))}</p></div></div>`;
+  // The title, its Beta tag, Look again and Report a bug share the top line, so the buttons stay at
+  // the top right however the text under them wraps. Folders are added and Games/ROMs is made in
+  // Settings.
+  const refresh = dirs.length ? romRefreshBtn() : '';
+  const head = `<div class="rm-top"><div class="rm-title"><h1>${esc(t('ROM Manager'))}</h1><span class="bh-tag">${esc(t('Beta'))}</span></div><div class="rm-tr">${refresh}${bug}</div></div><div class="head"><div><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div></div>`;
+  if (!dirs.length) return `<div class="page">${head}<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg><h2>${esc(t('No ROM folders yet'))}</h2><p>${esc(t('Create Games/ROMs in Settings and put each game in its console\'s folder, or add a folder you already have there.'))}</p><button type="button" class="btn main" data-act="rom-settings">${esc(t('Open Settings'))}</button></div></div>`;
   // The consoles with games (and the open one); the empty ones only when asked for, as a list of
   // thirty mostly empty consoles pushes the games out of sight.
   const shown = S.romAllCons || !firstWithGames ? all : all.filter((k) => counts[k] || k === cur);
@@ -7639,7 +7663,6 @@ document.addEventListener('input', (e) => {
 // The ROM Manager opens: matches are loaded once, and a Games/ROMs set up before the console
 // folders existed gets them now.
 async function enterRoms() {
-  for (const d of (S.settings.rom_dirs || []).filter(isGamesRoms)) invoke('rom_console_folders', { path: d }).catch(() => {});
   // Folders that were never looked through (added outside first setup, or a scan from before
   // they had files): looked through once now, so the page doesn't open on nothing.
   const neverScanned = (S.settings.rom_dirs || []).length && !(S.roms || []).length && !S.romsScannedHere;
@@ -7756,12 +7779,17 @@ function romBugUrl() {
     ...(con ? [`- Console open: ${con} (${onCon} files)`] : [])].join('\n');
   return `https://github.com/elripalda/RecompLauncher/issues/new?title=${encodeURIComponent('ROM Manager: ')}&body=${encodeURIComponent(body)}`;
 }
+// Settings' Games/ROMs button: Create makes it and opens it; Fix makes the console folders that
+// went missing again; either way it's in the list of ROM folders afterwards.
 async function setUpGamesRoms() {
+  const fixing = (S.gamesRom || {}).state === 'fix';
   const p = await invoke('games_rom_folder').catch(fail);
   if (!p) return;
+  // Asked again as Settings draws once more, so the button shows Ready.
+  S.gamesRomAt = 0;
   await saveSettings({ rom_dirs: uniq([...(S.settings.rom_dirs || []), p]) });
-  toast(t('Games/ROMs is ready, with a folder for each console.'));
-  invoke('open_folder', { id: null, path: p }).catch(() => {});
+  toast(fixing ? t('The missing console folders are back in Games/ROMs.') : t('Games/ROMs is ready, with a folder for each console.'));
+  if (!fixing) invoke('open_folder', { id: null, path: p }).catch(() => {});
   return scanRoms();
 }
 
@@ -8028,27 +8056,49 @@ async function loadShots(id) {
   if (S.view === 'game' && S.arg === id) refreshGame();
 }
 
-// The ROM Manager's scan bar: how many files it looked at and copies it found so far. It can't know
-// how many there are in all, so the bar shows it's busy rather than a share.
-function romScanBar() {
-  if (!S.romScan) return '';
-  const said = tf('Looking through your folders… {seen} files looked at, {found} copies found', { seen: S.romScan.seen, found: S.romScan.found });
-  return `<div class="prog rm-scan" role="status"><div class="track busy"><i></i></div><span id="rm-scan-said">${esc(said)}</span></div>`;
+// The ROM Manager's Look again: a refresh icon that turns into a spinning circle while it looks.
+// It can't know how many files there are in all, so the circle says it's busy rather than how far;
+// the count so far is in its tooltip and said to screen readers.
+const ROM_SPIN_MS = 900;
+const romScanSaid = () => tf('Looking through your folders… {seen} files looked at, {found} copies found', { seen: S.romScan.seen, found: S.romScan.found });
+function romRefreshBtn() {
+  const busy = !!S.romScan;
+  const tip = busy ? romScanSaid() : t('Look through your folders again');
+  // A page drawn again while it looks keeps the circle where it was, rather than starting it over.
+  const at = busy ? `style="animation-delay:-${(Date.now() - S.romScan.at) % ROM_SPIN_MS}ms"` : '';
+  const icon = '<svg class="ri" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.6-4.5L4 8"/><path d="M4 3.5V8h4.5"/><path d="M4 13a8 8 0 0 0 14.6 4.5L20 16"/><path d="M20 20.5V16h-4.5"/></svg>';
+  const spin = `<svg class="rs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle class="trk" cx="12" cy="12" r="8.5"/><circle class="arc" cx="12" cy="12" r="8.5" ${at}/></svg>`;
+  const said = busy ? `<span class="rm-said" id="rm-scan-said" role="status">${esc(romScanSaid())}</span>` : '';
+  return `<button type="button" class="btn sm rm-refresh${busy ? ' busy' : ''}" data-act="rom-scan" title="${esc(tip)}" aria-label="${esc(t('Look again'))}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon}${spin}${said}</button>`;
 }
-// Only the count changes while it looks: that line is updated, not the whole page.
+// Only the count changes while it looks: the tooltip and what's said, not the whole page.
 T.event.listen('rom-scan', ({ payload: p }) => {
   if (!S.romScan) return;
-  S.romScan = { seen: Number(p.seen) || 0, found: Number(p.found) || 0 };
+  Object.assign(S.romScan, { seen: Number(p.seen) || 0, found: Number(p.found) || 0 });
+  const btn = document.querySelector('.rm-refresh');
   const said = document.getElementById('rm-scan-said');
-  if (said) said.textContent = tf('Looking through your folders… {seen} files looked at, {found} copies found', { seen: S.romScan.seen, found: S.romScan.found });
+  if (btn) btn.title = romScanSaid();
+  if (said) said.textContent = romScanSaid();
 });
+// The circle turns back into the icon before the page is drawn with what was found, so it fades
+// rather than jumps.
+async function romRefreshSettle() {
+  const btn = document.querySelector('.rm-refresh.busy');
+  if (!btn) return;
+  btn.classList.remove('busy');
+  await new Promise((r) => setTimeout(r, 280));
+}
 async function scanRoms() {
   if (!(S.settings.rom_dirs || []).length) { S.roms = []; S.owned = {}; await addOwned(); render(true); return; }
-  toast(t('Looking through your folders…'));
-  // While it looks, the ROM Manager shows how far it got (the core's rom-scan events fill this in).
-  S.romScan = { seen: 0, found: 0 };
-  if (S.view === 'roms') render(true);
+  // On the ROM Manager the circle says it; elsewhere (Settings) a toast does.
+  if (S.view !== 'roms') toast(t('Looking through your folders…'));
+  S.romScan = { seen: 0, found: 0, at: Date.now() };
+  // The button there turns into the circle in place, so the icon fades into it.
+  const btn = document.querySelector('.rm-refresh');
+  if (btn) btn.outerHTML = romRefreshBtn().replace('rm-refresh busy', 'rm-refresh');
+  requestAnimationFrame(() => requestAnimationFrame(() => { const b = document.querySelector('.rm-refresh'); if (b && S.romScan) b.classList.add('busy'); }));
   try { S.roms = await invoke('scan_roms'); await loadOwned(); const added = await addOwned(); toast(tn(S.roms.length, 'Found 1 game file.', 'Found {n} game files.') + ' ' + (added ? tn(added, '1 recomp went into your Library.', '{n} recomps went into your Library.') : tf('{n} have recomps.', { n: ownedGames().length }))); } catch (e) { fail(e); }
+  await romRefreshSettle();
   S.romScan = null;
   render(true);
   // The ROM Manager's rows follow the games the new files are copies of.
@@ -9523,7 +9573,8 @@ async function act(el, e) {
       return scanRoms();
     }
     case 'rom-remove': await saveSettings({ rom_dirs: (S.settings.rom_dirs || []).filter((d) => d !== el.dataset.path) }); return scanRoms();
-    case 'rom-scan': return scanRoms();
+    case 'rom-scan': return S.romScan ? undefined : scanRoms();
+    case 'rom-settings': return setSection('library');
     case 'rom-games': return setUpGamesRoms();
     case 'rom-id': { const row = (S.romRows || [])[Number(el.dataset.i)]; return row && romIdentify(row); }
     case 'rom-bug': return invoke('open_url', { url: romBugUrl() }).then(() => toast(t('The report is filled in. Say what happened, then submit it on the page.'))).catch(fail);

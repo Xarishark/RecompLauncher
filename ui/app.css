@@ -621,7 +621,6 @@ button.prog.su-prog:focus-visible,.prog.su-prog:focus-visible{outline:2px solid 
 .mod .acts{display:flex;gap:8px;flex:none}
 .card-h .field{max-width:260px;height:38px;padding:0 14px}
 /* ROM Manager: consoles on the left, the selected console's games on the right. */
-.rm-acts{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
 /* The title with Beta beside it, and Report a bug at the other end of the line. */
 .rm-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:-24px}
 .rm-title{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
@@ -630,9 +629,21 @@ button.prog.su-prog:focus-visible,.prog.su-prog:focus-visible{outline:2px solid 
 .rm-con.big{padding:12px 14px;min-height:50px}
 .rm-con.big .nm{font:800 19px Archivo,Figtree,sans-serif;font-stretch:100%;letter-spacing:-.01em}
 .rm-bug{display:inline-flex;align-items:center;gap:7px}
-/* While it looks through the folders: the busy bar and a running count, above the panels. */
-.rm-scan{display:flex;flex-direction:column;gap:8px;margin-top:-12px}
-.rm-scan span{color:var(--muted);font-size:13px}
+/* Look again and Report a bug, at the right end of the title's line. */
+.rm-tr{display:flex;align-items:center;gap:10px}
+/* Look again: a refresh icon that turns into a spinning circle while the folders are looked through. */
+.rm-refresh{width:34px;padding:0;display:inline-grid;place-items:center}
+.rm-refresh svg{grid-area:1/1;width:17px;height:17px;transition:opacity .28s ease,transform .38s cubic-bezier(.2,.8,.2,1)}
+.rm-refresh .rs{opacity:0;transform:scale(.55)}
+.rm-refresh.busy{cursor:progress}
+.rm-refresh.busy .ri{opacity:0;transform:rotate(200deg) scale(.55)}
+.rm-refresh.busy .rs{opacity:1;transform:scale(1)}
+.rm-refresh .trk{opacity:.18}
+.rm-refresh .arc{stroke-dasharray:16 38;transform-box:view-box;transform-origin:12px 12px;animation:rm-spin .9s linear infinite}
+@keyframes rm-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.rm-refresh .arc{animation-duration:2.4s}.rm-refresh svg{transition:opacity .2s ease}}
+/* The running count, for screen readers: the circle shows the same to everyone else. */
+.rm-said{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .rm-more{justify-content:center;color:var(--muted);font-weight:600}
 /* Identify's list of games: buttons, so it looks the same on every system. */
 .rid-list{display:flex;flex-direction:column;gap:2px;max-height:240px;min-height:120px;overflow:auto;padding:4px;border-radius:12px;background:var(--fill);border:1px solid var(--line2)}
