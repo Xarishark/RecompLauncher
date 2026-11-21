@@ -7653,11 +7653,8 @@ function pageRoms() {
     // Identify for a row that isn't a known game yet; Change for one the player wants to correct.
     const idLabel = g.game ? t('Change…') : t('Identify…');
     const idBtn = `<button type="button" class="btn sm rm-id" data-act="rom-id" data-i="${i}" title="${esc(t('Pick which game this is'))}">${esc(idLabel)}</button>`;
-    // The game's picture: a recomp's cover, which is the game's own box art (a recomp's icon is
-    // the project's, often its developer's picture), else that icon; a plain disc when it has none.
-    const withCover = recs.find((a) => a.cover);
-    const withIcon = recs.find((a) => a.icon);
-    const art = withCover ? pic(thumbOf(withCover.cover, 120), 'rm-ico box') : withIcon ? pic(thumbOf(withIcon.icon, 96), 'rm-ico') : '';
+    const rowArt = romRowArt(recs);
+    const art = rowArt.box ? pic(thumbOf(rowArt.url, 120), 'rm-ico box') : rowArt.url ? pic(thumbOf(rowArt.url, 96), 'rm-ico') : '';
     const icon = art || `<span class="rm-ico ph" aria-hidden="true">${DISC_S}</span>`;
     const hide = romFilterHides(g.title, cur) ? ' hidden' : '';
     const regions = uniq(copies.map((r) => r.region)).join(', ');
@@ -7677,6 +7674,15 @@ function pageRoms() {
   const noMatch = `<p class="rm-nomatch"${romFilterNone(list, cur) ? '' : ' hidden'}>${esc(t('No game here matches.'))}</p>`;
   return `<div class="page rm-page">${head}<div class="rm-wrap"><div class="romman"><nav class="rm-cons" aria-label="${esc(t('Consoles'))}">${cons}</nav>
     <section class="rm-list" aria-label="${esc(conName(cur))}"><div class="rm-h">${conBadge(cur)}<h2>${esc(conName(cur))}</h2><span class="rm-n">${esc(tn(list.length, '1 game', '{n} games'))}</span>${filter}</div><div class="rm-rows">${note}${cols}${rows || empty}${list.length ? noMatch : ''}</div></section></div></div></div>`;
+}
+// A ROM row's picture, from the recomps of its game: the game's box art, else its icon (url ''
+// when none has either). Always the game's own art, never the project art a recomp shows
+// elsewhere, as a row is the game, not one recomp of it. -> { url, box }
+function romRowArt(recs) {
+  const cover = recs.map((a) => gameArt(a, 'cover')).find(Boolean);
+  if (cover) return { url: cover, box: true };
+  const icon = recs.map((a) => gameArt(a, 'icon')).find(Boolean);
+  return { url: icon || '', box: false };
 }
 // The ROM Manager's filter: one per console, so going back to a console finds its list as it was
 // left. A game's name is matched without case, accents or punctuation ("pokemon" finds Pokémon).
