@@ -7564,11 +7564,11 @@ function pageRoms() {
   if (!keepPick) S.romCon = firstWithGames || all[0] || '';
   const cur = S.romCon;
   const setup = dirs.some(isGamesRoms) ? '' : `<button type="button" class="btn main" data-act="rom-games" title="${esc(t('A folder for each console in Games/ROMs. Put your ROMs and disc images in their console\'s folder.'))}">${esc(t('Set Up Games/ROMs'))}</button>`;
-  // It's a beta: said above the title, with a way to tell us what went wrong at the top right.
+  // It's a beta: said beside the title, with a way to tell us what went wrong at the top right.
   const bug = `<button type="button" class="btn sm rm-bug" data-act="rom-bug" title="${esc(t('Opens a new issue on RecompLauncher\'s GitHub, filled in with your launcher version and system'))}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7.5V6a3 3 0 0 1 6 0v1.5"/><rect x="7" y="7.5" width="10" height="12" rx="5"/><path d="M12 11v8.5M4 13h3M17 13h3M5 8.5l2.5 1.5M19 8.5 16.5 10M5 18.5l2.5-1.5M19 18.5 16.5 17"/></svg>${esc(t('Report a bug'))}</button>`;
-  // Beta and Report a bug share the top line, so the bug button stays at the top right however
-  // the title and the buttons under it wrap.
-  const head = `<div class="rm-top"><span class="bh-tag">${esc(t('Beta'))}</span>${bug}</div><div class="head"><div><h1>${esc(t('ROM Manager'))}</h1><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div>
+  // The title, its Beta tag and Report a bug share the top line, so the bug button stays at the
+  // top right however the text and the buttons under it wrap.
+  const head = `<div class="rm-top"><div class="rm-title"><h1>${esc(t('ROM Manager'))}</h1><span class="bh-tag">${esc(t('Beta'))}</span></div>${bug}</div><div class="head"><div><p>${esc(t('Your ROMs and disc images by console, and the recomps they go with. Nothing leaves your PC.'))}</p></div>
     <div class="rm-acts">${setup}<button type="button" class="btn" data-act="rom-add">${esc(t('Add a folder'))}</button>${dirs.length ? `<button type="button" class="btn" data-act="rom-scan"${S.romScan ? " disabled" : ""}>${esc(t('Look again'))}</button>` : ''}</div></div>${romScanBar()}`;
   if (!dirs.length) return `<div class="page">${head}<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg><h2>${esc(t('No ROM folders yet'))}</h2><p>${esc(t('Set up Games/ROMs and put each game in its console\'s folder, or add a folder you already have.'))}</p></div></div>`;
   // The consoles with games (and the open one); the empty ones only when asked for, as a list of

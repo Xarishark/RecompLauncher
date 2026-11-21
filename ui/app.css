@@ -622,8 +622,10 @@ button.prog.su-prog:focus-visible,.prog.su-prog:focus-visible{outline:2px solid 
 .card-h .field{max-width:260px;height:38px;padding:0 14px}
 /* ROM Manager: consoles on the left, the selected console's games on the right. */
 .rm-acts{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
-/* Beta and Report a bug on the line above the title, at its two ends. */
-.rm-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:-18px}
+/* The title with Beta beside it, and Report a bug at the other end of the line. */
+.rm-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:-24px}
+.rm-title{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.rm-title h1{font-size:34px}
 .rm-bug{display:inline-flex;align-items:center;gap:7px}
 /* While it looks through the folders: the busy bar and a running count, above the panels. */
 .rm-scan{display:flex;flex-direction:column;gap:8px;margin-top:-12px}
