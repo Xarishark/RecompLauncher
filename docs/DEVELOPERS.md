@@ -26,9 +26,13 @@ The rule: use `start` to pass inputs the game reads when it starts. Add `prepare
 game has separate work to do before Play, like importing assets or recompiling from the player's
 dump. Verification works with either.
 
-Game pages show who maintains a game's setup: its developer, RecompLauncher or the community.
-Where the file comes from doesn't decide it. If you ship and maintain your own
-`recomplauncher.json`, tell us and your game shows as maintained by its developer.
+Game pages have a Launcher Support box. Each feature in it is marked as coming from your own
+`recomplauncher.json`, from RecompLauncher, or not there yet. A file that is only in your repo
+doesn't reach players, except on a Forgejo or Gitea server (see
+[Where the file goes](#where-the-file-goes)). When everything you can control comes from
+your own file, the box says Full Support. A free
+[developer account](https://recomplauncher.com/developers?signup=1) puts the verified tick next to
+your name there.
 
 Launch takes about ten minutes. Before any of them, your releases need to install cleanly, which
 most already do: see [Releases that install cleanly](#releases-that-install-cleanly).
@@ -42,21 +46,75 @@ through us, and every release you publish reaches players the next time the laun
   `MyRecomp-v1.2.0-Windows-x64.zip`, `MyRecomp-v1.2.0-Linux-x64.AppImage`. The launcher picks the
   file for the player's PC from those words. Builds for ARM say `arm64`.
 - **Zips on Windows.** A `.zip` (or `.7z`) of your folder is best. An installer `.exe` works, but
-  it's the last choice, because it wants to be run as setup. On Linux, an AppImage or a `.tar.gz`.
+  it's the last choice, because it wants to be run as setup. Never install into Program Files
+  without a proper installer and uninstaller (MSIX) or a package manager: the launcher can't
+  update or remove what lands there.
+- **On Linux, a tarball and an AppImage of the same folder.** A `.tar.gz`, `.tar.xz` or `.tar.zst`
+  (for example `MyRecomp-v1.2.0-Linux-x64.tar.xz`). Build it once, portably, so it runs on older
+  systems too: in a GitHub Actions `ubuntu:22.04` container, or the Steam Runtime's `sniper` SDK.
+  Then pack that one folder both ways. Either way the game plays from a plain folder (see
+  [AppImages](#appimages)), and players who want a single file to keep get the AppImage.
 - **One folder on top is fine.** A zip with everything inside `MyRecomp-v1.2.0/` is unwrapped, so
   your program lands in the game's folder either way.
 - **Keep extras out of the way.** Files with `debug`, `symbols`, `pdb` or `source` in the name, and
-  `.sha256`, `.sig` and `.asc` files, are never taken for the game.
+  `.sha256`, `.sig` and `.asc` files, are never taken for the game. So a source archive you upload
+  yourself says `source` in its name: `MyRecomp-v1.2.0-source.tar.gz`.
 - **Checked on the way in.** GitHub keeps a SHA-256 of every file you upload, and the launcher
   checks the download against it before installing. You don't have to do anything.
 - **Updates keep what the game made.** An update unpacks over the game's folder, so saves,
   settings and caches your game wrote stay. That also means a settings file *inside your release*
   replaces the player's on every update. Ship defaults instead (`default.toml`, or write them on
   first start), or let the launcher write them with `config.new`.
+- **Updates go in whole or not at all.** A file your last release had and the new one doesn't
+  goes with the update, unless the game changed it. If anything stops an update (a locked file, a
+  full drive, the PC turning off), the game is left exactly as it was, and an update cut off by the
+  launcher closing is finished or undone the next time it starts. Your release's files are only
+  ever all old or all new. A release that has a file where the last one had a folder (or the other
+  way round) replaces it only when it holds nothing but your last release's files; when the
+  player's own files are there, the update stops and says so, and nothing changes.
 - **`recomplauncher.json` at the top of the zip**, next to your program.
 - **Pre-releases are betas.** Mark a test build as a pre-release on GitHub. Normal players stay on
   your latest full release, and we can open the pre-release as a beta in the launcher, where
   players join it with one button and go back just as easily. See [Betas](#betas).
+
+## Where your game writes
+
+The launcher moves, backs up and uninstalls a game as its folder. What your game writes inside it
+goes along; what it writes anywhere else is left behind. So:
+
+- **Write only under `{install}` and `{data}`.** `{data}` is `recompdata` inside the game's folder,
+  the one place for everything your game makes: saves, settings, caches, builds. The launcher
+  makes it before your game or your setup step starts, and passes it as `RECOMPLAUNCHER_DATA`.
+  Don't ship a `recompdata` folder in your release.
+- **Take one data path for everything, like portable emulators do.** A command-line option or
+  `RECOMPLAUNCHER_DATA` that moves all of it at once, not one option per kind of file. Without one,
+  keep your system's usual places. An AppImage or a `.app` writes to the system's usual places
+  (`~/.local/share`, `~/Library/Application Support`) unless it's given a data path; given one,
+  it's portable and the launcher looks after it. Your program's own files (an unpacked
+  AppImage's `AppRun` and `usr/`, a `.app`'s contents) are replaced on every update, so nothing
+  your game writes goes there: it goes in `{data}`.
+- **Caches go in `{data}`, under `{data}/cache`.** Backups and cloud saves leave `cache` folders
+  out, so a shader cache never fills a player's save copies.
+- **Temp is temp.** Your setup step gets a temp folder of its own (see [`prepare`](#prepare-your-own-setup-step)),
+  emptied after every run. Nothing you need later goes there.
+- **Name both programs.** `start.program` and `prepare.program` say which file runs. Don't copy
+  yourself somewhere else and run from there (bootstrapping): the launcher updates the copy in the
+  game's folder, so the other one goes stale.
+- **Don't depend on `$APPIMAGE`.** On Linux the launcher always unpacks your AppImage and runs it
+  from a plain folder, so `APPIMAGE` is never set (see [AppImages](#appimages)).
+- **Never update yourself when `RECOMPLAUNCHER=1`.** Your game and your setup step both get it,
+  and the launcher brings players every release you publish, by itself once they turn on
+  automatic updates. If only a flag turns your updater off, put it in `start.args`, like
+  `"args": ["--no-update-check"]`.
+
+```json
+"start": { "program": ["MyRecomp.exe"], "args": ["--data", "{data}"] },
+"prepare": { "program": ["MyRecomp.exe"], "args": ["--prepare", "--game", "{game}", "--data", "{data}"], "done": ["{data}/build/game.pak"] },
+"saves": ["{data}/saves"]
+```
+
+Only `{data}` and the setup step's temp folder reach the Mac version of the launcher; neither has
+been tried on a Mac yet.
 
 ## Where the file goes
 
@@ -75,14 +133,33 @@ The launcher uses the first one it finds:
 
 ### AppImages
 
-The launcher reads `/recomplauncher.json` directly from the AppImage's SquashFS payload.
+The launcher reads `/recomplauncher.json` directly from the AppImage's SquashFS or DwarFS payload.
 It does not execute or mount the image to inspect it, and writes no extracted JSON sidecar.
 Settings, save and folder paths still start from the installation directory (`{install}`),
 not from the internal filesystem.
 
-The Flatpak build of the launcher unpacks your AppImage at install and starts its `AppRun`. See
-[Your recomp in the RecompLauncher Flatpak](FLATPAK.md) for that and the sandbox's other
-differences.
+**On Linux the launcher never runs an AppImage.** Every game plays from a plain folder: your
+AppImage is unpacked at install with the launcher's own reader (no FUSE, and nothing of the image
+runs), the AppImage file is deleted, and the game starts from its `AppRun`. SquashFS AppImages and
+DwarFS ones (what pkgforge's Anylinux tooling and Tauri's portable AppImage write) both work. This is the
+same in the AppImage, .deb and Flatpak builds of the launcher (the sandbox's other differences are
+in [Your recomp in the RecompLauncher Flatpak](FLATPAK.md)).
+
+- The AppImage's contents (`AppRun`, `usr/`, the `.desktop` file, an embedded
+  `recomplauncher.json`) become the game's folder.
+- The game starts from `AppRun`, with `APPDIR` set to the game's folder and `ARGV0` to `AppRun`,
+  as the AppImage runtime would set them. **`APPIMAGE` is not set**, since there's no AppImage file.
+  Find your files from `APPDIR` or your own program's path (`/proc/self/exe`), never from
+  `APPIMAGE` or a mount point, and don't update yourself through `APPIMAGE`: updates come from
+  your releases through the launcher.
+- If your AppImage won't unpack (an old type-1 image, or a damaged one), the launcher installs your
+  release's tarball instead, when it has one. Without one,
+  the install stops and tells the player why. It never falls back to running the AppImage.
+- A release with several AppImages unpacks each into a folder named after it
+  (`MyGame-Editor-x86_64.AppImage` into `MyGame-Editor-x86_64/`, started from its `AppRun`). Ship
+  one when you can.
+- An AppImage a player already has comes in the same way: Bring Your Recomps unpacks it into their
+  Recomp Library and leaves their file where it is.
 
 Use the AppImage's filename in `start.program`, for example:
 
@@ -94,18 +171,43 @@ Use the AppImage's filename in `start.program`, for example:
 ```
 
 Program entries ending in `.AppImage` in `start` and `prepare` are rebound to the actual
-installed filename, so renaming the download does not break launch. An internal path such
-as `usr/bin/game` cannot be started by the launcher outside the image.
+installed filename, so renaming the download does not break launch. Once the AppImage is
+unpacked, the same entry starts its `AppRun`, so you never need to name `AppRun` or an internal
+path such as `usr/bin/game` yourself.
 
 Embedded lookup applies when the install folder contains exactly one regular `.AppImage`
 file at its top level (case-insensitive extension). With multiple AppImages it does not
 guess: the adjacent profile and catalog fallback continue to work. The manifest must be
 a regular file no larger than 1 MiB, with `format: 1`. Gzip, XZ, Zstandard and LZ4 SquashFS
-compression are supported. Missing, malformed or unsupported metadata falls back to the
+compression are supported, and DwarFS with Zstandard (its usual compression). Missing, malformed or unsupported metadata falls back to the
 adjacent manifest and then the catalog. Replacing the image is reflected on the next read;
 there is no extracted copy to become stale.
 
 Developer tools identify the embedded source and check the profile actually in use.
+
+The same file uploaded twice, once without the version for `releases/latest/download` links
+(`Game-1.2.0-x86_64.AppImage` and `Game-x86_64.AppImage`), is one build: the launcher installs
+the one that names its version and doesn't ask the player to choose. GitHub's SHA-256 of each file
+says they're the same.
+
+### Mac apps
+
+Put your `.app` at the top of a zip, with `recomplauncher.json` beside it, and say the system in
+the name (`MyGame-1.2.0-macos-arm64.zip`) so it's picked over a disk image. Links inside the app,
+like a framework's `Versions/Current`, are kept. Name the app in `start.program` and
+`prepare.program`; the launcher runs the program its `Info.plist` names:
+
+```json
+"start": { "program": ["MyGame.app", "MyGame-x86_64.AppImage"] },
+"prepare": { "program": ["MyGame.app", "MyGame-x86_64.AppImage"], "args": ["--prepare", "--game", "{game}"] }
+```
+
+The first entry that exists on the player's system runs, so one file covers a Mac and Linux.
+RecompLauncher 0.90 Beta 54 and older find an app in `start.program` and `prepare.program` only by
+its program's own path, which works everywhere: `"MyGame.app/Contents/MacOS/MyGame"`.
+
+If your game updates itself (Sparkle, say), skip that when `RECOMPLAUNCHER` is set: the
+launcher installs your releases over the app, and two updaters on one app fight.
 
 Two examples are worth reading:
 
@@ -163,6 +265,14 @@ What the player sees:
     file is recognised by its contents, not its extension. This is a content check only: it needs
     and adds no keys, and nothing is copied. A wrong build is refused with the build it found. Use
     it with `kind: "iso_or_folder"`.
+  - `ids`: the IDs your game reads, as on the copy: a GameCube or Wii disc's (`"GZ2E01"`, or
+    `"GZ2"` for every region), an N64 cartridge's game code, a PlayStation or PS2 disc's serial,
+    or an extracted PS3, PS4 or PS5 game's title ID from its `param.sfo` (`"CUSA00242"`). Another
+    game's copy is refused with the ID it has. For a PS4 game, list every region's title ID next
+    to `file: "eboot.bin"`: every PS4 game has an `eboot.bin`, and a game's own title often has an
+    edition or subtitle your catalog name doesn't, so the ID is how the launcher finds the
+    player's folder. The developer check warns when a check by `eboot.bin` or `param.sfo` lists
+    no `ids`.
 
 The same check is how the launcher finds copies in the player's folders, so a disc image named
 `backup-07.iso` is still found.
@@ -190,7 +300,7 @@ to `game`. The launcher asks for it after the copy and puts it in your folder:
 "game": {
   "kind": "folder",
   "label": "Your game folder (CUSA00341).",
-  "check": { "file": "eboot.bin" },
+  "check": { "file": "eboot.bin", "ids": ["CUSA00341"] },
   "update": { "into": "update", "label": "Your 1.02 update folder.", "accepts": "folder", "optional": true }
 }
 ```
@@ -227,6 +337,10 @@ Every game the launcher starts also gets these, whether it has a `recomplauncher
 Use them to fit in: skip your own launcher window, open full screen with your controller menus
 when the mode is `bigpicture`, and show the right button glyphs from the first frame.
 
+A game with a `recomplauncher.json` also gets `RECOMPLAUNCHER_DATA`: its `{data}` folder, made
+before it starts (see [Where your game writes](#where-your-game-writes)). Through Proton on Linux
+it's given as Windows names it (`Z:\...`).
+
 ### Paths
 
 These fill in anywhere a path, an argument or a value is written:
@@ -234,6 +348,7 @@ These fill in anywhere a path, an argument or a value is written:
 | | |
 | --- | --- |
 | `{install}` | Your game's folder |
+| `{data}` | `{install}/recompdata`: everything your game writes (see [Where your game writes](#where-your-game-writes)) |
 | `{game}` | The player's copy (the .iso or the folder; for a .cue, its .bin unless `label` names .cue) |
 | `{documents}` | Documents |
 | `{local}` | AppData\Local, or ~/.local/share |
@@ -261,15 +376,33 @@ PC. List folders, single files, or files matching a `*` pattern:
 "saves": ["{local}/My Game/saves", "{install}/settings.toml"]
 ```
 
-Without it, the launcher watches which files the game writes while it runs, and uses those places.
-That works for most games, but saying where is better. Only list saves and small settings: game
-files, programs and archives are never copied, and nothing over 64 MB.
+A game that keeps everything in `{data}` lists `{data}/saves`. Its `{data}/cache`, and the
+launcher's own work folders, are never copied, even when you list the whole of `{data}`. When a
+player uninstalls the game, a copy of its saves inside its folder is made first, unless they ask
+for the saves to go too, and its Saves tab puts it back after a reinstall.
+
+Without it (and without a catalog entry that says), the launcher doesn't guess: the game's Saves tab
+says it doesn't know where the game saves, and nothing is backed up or synced until the player picks
+the folder. So say where. Only list saves and small settings: game files, programs and archives are
+never copied, and nothing over 64 MB.
+
+You can move them in a later release. Keep the same number of entries in the same order, and change
+the path in place: a copy made from the old place goes into the new one when the player restores it,
+or when the launcher brings back their cloud save because the new place is empty. From
+`"saves": ["{home}/Games/MyGame/user"]` to this, a copy from before restores into the new folder:
+
+```json
+"saves": ["{install}/Game/user"]
+```
+
+This only follows places your file or the catalog names, not ones the launcher noticed on its own.
 
 ### `games`: several games in one release
 
-A release that carries a whole series lists its games. Each one gets its own tile in the Library
-and Big Picture, its own play time, achievements, pins and shortcuts. Installing, updating and
-removing stay one thing for the whole release.
+A release that carries a whole series lists its games. Players see each one as a game of its own:
+in the Catalog, search and Home, with its own page (a "Part of" pill leads to the release's page) and
+its own tile in the Library and Big Picture, with its own play time, achievements, pins and
+shortcuts. Installing, updating and removing stay one thing for the whole release.
 
 ```json
 "games": [
@@ -283,7 +416,12 @@ removing stay one thing for the whole release.
   (`recomplauncher://game/<recomp id>--<id>`).
 - `name`: shown on its tile.
 - `args`: added after `start.args` when this game is played. Without them Play opens your own
-  menu, and the tile says to pick the game there.
+  menu, and the tile says to pick the game there. They can carry this game's files with
+  `{input:id}`, as `start.args` can; an argument whose file isn't chosen is left out:
+
+  ```json
+  { "id": "blue", "name": "Pokémon Blue", "args": ["--game=blue", "--rom={input:rom-blue}"], "inputs": ["rom-blue"] }
+  ```
 - `title_id` (Xbox 360): this game's title id. Only its own unlock file, `<title_id>.toml`, is read.
 - `inputs`: the ids of the setup inputs this game needs. Inputs no game lists are shared by all.
   Easy Setup for a game asks only for its own and the shared ones.
@@ -291,7 +429,36 @@ removing stay one thing for the whole release.
   release's saves are shared by its games.
 
 With one game or none, the release shows as one game, as before. When your release has no list,
-the one on recomplauncher.com is used. Launchers older than 0.90 Beta 36 skip it and show one tile.
+the one on recomplauncher.com is used. Before anyone installs your release, the launcher only has
+that list to go on: ask for your games to be listed there (with their art), or the release shows
+as one game until it's installed. Launchers older than 0.90 Beta 36 skip it and show one tile.
+
+### `system`: what your game needs from the PC
+
+Say what each of your builds needs, so a player with an older PC is told why the game won't start
+instead of seeing it close:
+
+```json
+"system": {
+  "windows": { "version": "10", "graphics": { "d3d12": "12_0" } },
+  "linux": { "glibc": "2.35", "graphics": { "vulkan": "1.3" } },
+  "macos": { "version": "13", "graphics": { "metal": "3" } }
+}
+```
+
+- One part for each system you ship a build for. A part or a key you leave out is no known need.
+- `version`: the oldest Windows (`"10"`, `"11"`, or a build like `"10.0.19041"`) or macOS (`"13"`,
+  `"14.4"`).
+- `glibc`, for Linux: the oldest glibc your build runs with. That's the glibc of the system you
+  built it on, so build on an old one (see [Releases that install cleanly](#releases-that-install-cleanly)).
+- `graphics`: the API you draw with (`vulkan`, `opengl`, `d3d12`, `d3d11`, `d3d9` or `metal`) and
+  its oldest version.
+
+The game's page lists these with the rest of what it needs, and the launcher checks the system's
+version and glibc against the player's PC: when the PC is older, the page shows it in red and the
+player is told when they press Play. The game still starts, since the PC may manage anyway. The
+graphics version is only shown. A Windows build played through Proton on Linux is checked against
+nothing: its Windows version means nothing there.
 
 ## Settings: in the launcher
 
@@ -421,8 +588,9 @@ can't add them from outside. It can give players one clear place to turn them on
 }
 ```
 
-DLSS ships through NVIDIA's Streamline SDK, which is free to use. If you're adding it, the
-setting above is all the launcher needs.
+DLSS comes from NVIDIA's SDK, through Streamline or NGX directly. It isn't open source, so most
+recomps can't ship it. The setting above only turns it on: to get the SDK to the player, see
+**Vendor SDKs the build needs** under `prepare`.
 
 ### Looks
 
@@ -517,17 +685,93 @@ disc or building a cache, give the launcher a way to run it without a window:
 It runs on the setup screen as "Getting the extras", after the copy is checked and before the
 settings are written. It runs again whenever the player changes their copy.
 
-- Don't open a window.
+- The step runs with no window and never asks anything or waits for input: everything it needs
+  comes from its arguments and environment.
 - Print lines like `progress 0.4 Unpacking menu art` as you go. The number is from 0 to 1 and the
   text after it shows under the step.
 - Exit with 0 when it worked. Anything else shows as a failed setup, with your exit code.
-- Write what you make to the same place your launcher would, so both stay in step.
+- Write what you make to `{data}` (pass it in `args`, or read `RECOMPLAUNCHER_DATA`), and have your
+  own launcher use the same place when it's given that path, so both stay in step.
+- It gets `RECOMPLAUNCHER=1`, `RECOMPLAUNCHER_VERSION` and `RECOMPLAUNCHER_DATA`, like the game.
+  `env` adds your own, like `start.env`:
+
+  ```json
+  "prepare": {
+    "program": ["MyRecompBuilder.exe"],
+    "args": ["--prepare", "--game", "{game}"],
+    "env": { "MYRECOMP_CACHE": "{data}/cache" }
+  }
+  ```
+- `TMPDIR`, `TEMP` and `TMP` point to `{install}/.recomplauncher-tmp`, a folder the launcher makes
+  empty for each run, on the game's drive, and takes away when the step ends, however it ends. Put
+  only scratch files there. The game itself, when Play starts it, gets the system's own temp folder.
+- The step starts only with at least 1 GB free on the game's drive; otherwise the player is asked
+  to free some up first.
+- On Windows, if what you print says a path was too long (a `PathTooLongException`, "The filename
+  or extension is too long"), the player is told to use a library folder with a shorter path or to
+  turn on Windows' long paths setting. The launcher never changes that setting.
+- A run for new options only (the player turned one on after setting up) should reuse what the
+  last run made, not start again from the disc.
+- **Built from the player's copy?** Keep everything the game needs in your folder, so it plays
+  without the copy, and list what the build leaves in `done`. To build again later without the
+  copy, see `keeps_copy` below.
 - `"version"` (optional): change it only when players who already set up must run the step again,
-  like when your output format changes. Nothing else in this file makes them set up again.
+  like when your output format changes. Nothing else in this file makes them set up again. The
+  game's page keeps its Play button, with "Needs a new build after the update" under it, and the
+  next Play opens a small Finish the Update window: Build Now builds it again (from what the step
+  kept, with `keeps_copy`, or from the player's copy), asks about any option the update added, and
+  starts the game when it's done. A game set up from named `inputs` opens Easy Setup for it, with a
+  note that the game is built again. A build the player pointed the launcher at
+  themselves ("Use a Build You Already Have") isn't asked. An update of your game doesn't change
+  `version` by itself: when the step builds the game itself (its recompiled program), so every
+  release needs a new build, put your release version in `version` each time you package one
+  (`"version": "0.4.2"`). Without it, players keep playing the build of the release they set up.
+- To build into the player's install folder instead of their home folder, pass it to your builder
+  (`"args": ["--cli", "--prepare", "--game={game}", "--out", "{install}/YourGame"]`) and start
+  from the same place (`"start": {"args": ["--play", "{install}/YourGame"]}`, and `folders.game`).
+  When that folder is gone, Play builds the game again, as it does for a folder under `{home}`.
 - `"done"` (optional): the files the step leaves when it has finished, like
   `["{home}/Games/YourGame/prepared.bin"]`. When they're all there, the game counts as set up, even
   when your own launcher built it, and plays without asking for the copy (unless `start` uses
-  `{game}`). If one goes missing, the player is asked to set up again.
+  `{game}`). If one goes missing, the player is asked to set up again. It's also what a finished
+  build has: when a player points the launcher at a build of their own, the files of `done` in
+  your build folder must be in theirs, so list one your
+  build always leaves, like `["{install}/YourGame/game.pak"]`. Without `done`, any folder with files
+  in it is taken.
+- `"keeps_copy": true` (optional): your step keeps what it needs from the copy in your build folder
+  (the first `folders.game`) and can run again from there without it, like an update that rebuilds
+  from what the first build unpacked. Then a player who deleted their copy to save space isn't
+  asked for it again: when `version` changes, or a file of `done` is missing, Play builds the game
+  again from what you kept, and Easy Setup runs the step the same way when no copy is picked. The
+  launcher leaves out every argument (and `prepare.env` value) with `{game}` in it, so write the copy as one argument
+  (`--game={game}`, not `"--game", "{game}"`); option args (`--fetch-ngx-sdk`) are still added. List
+  `done` too, so the launcher can tell when the build is finished. When your build folder is gone,
+  or the run fails, the player is asked for their copy and the game is built from that.
+
+  ```json
+  "prepare": {
+    "program": ["YourGameBuilder.exe"],
+    "args": ["--cli", "--prepare", "--game={game}", "--out", "{install}/YourGame"],
+    "done": ["{install}/YourGame/yourgame.exe"],
+    "keeps_copy": true
+  },
+  "folders": { "game": [{ "path": "{install}/YourGame" }] }
+  ```
+
+**A second file from the player.** When your step needs more than the copy, like an official patch
+or an update, ask for it as a named input and pass it with `{input:<id>}`, next to `{game}`. The
+setup screen asks for both. Don't download it in the step: players bring their own files.
+
+```json
+"inputs": [
+  { "id": "patch", "label": "The official 2.0 patch (patch20.zip)", "role": "update",
+    "formats": [{ "type": "file", "extensions": ["zip"] }] }
+],
+"prepare": { "program": ["yourgame.exe"], "args": ["--prepare", "--game", "{game}", "--patch", "{input:patch}"] }
+```
+
+[SETUP-INPUTS.md](SETUP-INPUTS.md) has the rest: several discs, optional DLC, and `{input:<id>}` in
+`start.args` and `start.env` too.
 
 #### `prepare.options`: ticks for a vendor's SDK
 
@@ -560,14 +804,56 @@ when it's on its `args` are added after the step's own:
 - With a `license` (a `name` and an `https` `url`) the tick starts off, and ticking it is the
   player accepting it. Your args are what pass that on, like `--accept-nvidia-license`: never accept
   for the player yourself. Without one it starts on, or as `default` says.
-- Your builder gets only these args. The launcher sets no environment variables for it, so keep
-  the SDK in your builder's own folder and put runtime files where the game looks.
+- `"required": true` is for something the build can't run without. The setup screen's buttons
+  stay off, with a line saying why, until it's ticked, and the launcher refuses to start the step
+  without it. Only the PCs it's shown on count: an option `os` or `gpu` hides is never required
+  there. With a `license` it still starts off: only the player accepts it. Launchers older than
+  0.90.0-beta.64 don't know `required` and show a plain tick, so keep your builder's own check
+  (exit with a code and say why) until your `min` is that version:
+
+  ```json
+  "options": [
+    {
+      "id": "vs_build_tools",
+      "label": "Microsoft Visual Studio Build Tools",
+      "note": "Needed to build the game on your PC: installed if this PC doesn't have them.",
+      "os": ["windows"],
+      "required": true,
+      "args": ["--accept-vs-license"],
+      "license": { "name": "Microsoft Visual Studio license terms", "url": "https://visualstudio.microsoft.com/license-terms/" }
+    }
+  ]
+  ```
+- Your builder gets these args added to its own, with the step's usual environment. Where to put
+  the SDK and its runtime files: [Vendor SDKs the build needs](#vendor-sdks-the-build-needs).
 - Print `progress` lines for the download too. If it fails, exit with a code other than 0: the
   player sees "Its setup step stopped with code N", so put the reason in your own log.
 - An option you add in a later release reaches players who already set the game up: Set Up
   Again, beside Play, gets a New mark, and the next time they press Play they're asked once to turn
   it on (the setup runs again with the copy they set up with) or play as it is. Their answer is
   kept, so make the step cheap to run again: reuse what the last run made.
+
+#### Vendor SDKs the build needs
+
+Some features can't be built without a vendor's SDK, like NVIDIA's DLSS (NGX). You can't ship it,
+and the launcher can't add it from outside. Have your builder fetch it on the player's PC, after
+the player agrees to the vendor's license:
+
+1. Give the builder a flag that downloads the SDK from the vendor, and a second flag that says
+   the license was accepted. Without the second, it downloads nothing and stops.
+2. Add a `prepare.options` tick, as above, with both flags in `args`, a `license`, and `gpu`
+   (`nvidia` for DLSS). Ticking it is the player accepting the license.
+3. Download the SDK to the step's temp folder (`TEMP`, `TMP`, `TMPDIR`), which is emptied after
+   every run, or to `{data}/cache` to reuse it on the next one. The step gets
+   `RECOMPLAUNCHER_DATA` and whatever you set in `prepare.env`, and nothing else of yours: a
+   variable from your own setup can't be required. Check it by running the builder exactly as the
+   launcher does, with the arguments above and that environment.
+4. Put the vendor's runtime files where the game looks for them, never in your release. For
+   DLSS, that is `nvngx_dlss.dll`, and `nvngx_dlssg.dll` for frame generation, in an `ngx` folder
+   in the game's folder.
+5. With the tick off, the build must be the one you ship today.
+6. Print `progress` lines while it downloads. If it fails, exit with a code other than 0 and
+   write the reason in your own log: the player sees "Its setup step stopped with code N".
 
 ### `game.dumps`: known good copies
 
@@ -679,11 +965,73 @@ invite. Players join from the launcher or their account page, play it, and go ba
 release with one button. You can also name one release by its tag instead of "the newest
 pre-release".
 
+## Recomp Standards
+
+What makes a recomp easy to play, wherever players get it from. Nothing here is required to be listed on RecompLauncher. These are the things players trip over most, and most of them are small changes.
+
+### The basics
+
+**Never ship game files.** No ROMs, disc images, extracted assets or keys. Players bring their own copy.
+
+**Accept the formats people actually have.** Most backups are packaged files, not the extracted folders a recomp is often first written for. Support the standard packaged formats where they apply:
+
+| Console | Accept |
+| --- | --- |
+| PS1 | CHD, BIN/CUE, ISO |
+| PS2 | CHD, ISO |
+| PSP | CHD, ISO, CSO |
+| PS3 | a decrypted ISO, or the game folder (PS3_GAME) |
+| PS4 | the dumped game folder (CUSA…), or a fake-signed PKG |
+| PS5 | the dumped game folder (PPSA…) |
+| PS Vita | a decrypted dump: VPK or the game folder (PCSA…, PCSE…) |
+| Dreamcast | CHD, GDI |
+| Saturn, Sega CD / Mega CD | CHD, BIN/CUE |
+| TurboGrafx-CD / PC Engine CD, Neo Geo CD | CHD, BIN/CUE |
+| 3DO, Amiga CD32, Philips CD-i | CHD, BIN/CUE |
+| GameCube, Wii | RVZ, ISO, GCZ (and WBFS for Wii) |
+| N64 | .z64, .n64 and .v64 (any byte order), zipped |
+| NES, SNES, GB, GBA, DS | the ROM, or zipped |
+| Switch, Switch 2 | NSP, XCI and NUP, not only extracted exefs/romfs (with the player's keys, see below) |
+| Xbox | ISO (XISO), or an extracted folder |
+| Xbox 360 | ISO, or an extracted folder with default.xex |
+
+CHD is the format most disc-based backups come in, and the one players ask for most. Reading it is a small library ([libchdr](https://github.com/rtissera/libchdr), BSD licensed).
+
+**Make the player's own copy and keys easy to use.** Where a decrypted dump exists (a decrypted PS3 ISO, a dumped PS4 or PS5 folder, a decrypted Vita game), accept it as is, so players don't have to run a separate tool first. Where the game has to be decrypted (Switch NSP, XCI and NUP, for example), read the player's own keys from a file they point to, with an option like `--keys <path>`. Then a launcher can pass the keys file the player added (RecompLauncher can), instead of the player copying it into your folder. Never ship keys yourself.
+
+**Check the copy, then say what's wrong.** If you know the good dumps (from [Redump](http://redump.org) or [No-Intro](https://no-intro.org)), check against them. When a file is wrong, say why in one line ("This is the PAL version. The recomp needs the USA one.") instead of crashing later.
+
+**Let the game's location be passed in.** A `--game <path>` option (a file or a folder) means launchers, scripts and Steam shortcuts can start your recomp without anyone moving files around. Keep your own picker for everyone else.
+
+### Releases
+
+- **Tag every release with a version** (`v1.2.0`) and attach the builds to the GitHub release, not just to the README or Actions.
+- **Name every file for what it is**, the same way every time: `yourgame-1.2.0-windows-x64.zip`, `-linux-x86_64.tar.gz` and `-linux-x86_64.AppImage`, `-macos-arm64.zip`. [Releases that install cleanly](#releases-that-install-cleanly) has the rest: the words a launcher picks a file by, one portable Linux build packed both ways, `source` in a source archive's name, and staying out of Program Files.
+- **Build for Linux and Mac too** when you can. A lot of players are on Steam Deck.
+- **Say what changed** in the release notes, even in one line.
+
+### On the player's PC
+
+- **One data folder, and a way to move it.** Take one option for where everything goes (saves, settings, caches, logs), like portable emulators do. Without it, use the system's usual per-user folder, and say where in the README. A launcher can then keep all of it with the game: RecompLauncher passes `{data}` (`RECOMPLAUNCHER_DATA`), see [Where your game writes](#where-your-game-writes).
+- **Settings in a file a person can read**: TOML, INI or JSON, with every option written out and commented. Don't hide settings in the registry.
+- **Logs in a known place**, kept for the last few runs, so players can send them when something breaks.
+- **Controllers through SDL**, with buttons that can be remapped and a sensible default for Xbox, PlayStation and Switch pads.
+- **No admin rights, no installer required.** Unzip and play.
+- **Don't download anything at first start** without asking.
+
+### Extras that players notice
+
+- **recomplauncher.json (this guide)**: one-click setup and your settings on the game's page in RecompLauncher.
+- **[Recomp Achievements](https://github.com/elripalda/RecompAchievements)**: achievements, Beaten and Mastered, leaderboards.
+- **A "Get it on RecompLauncher" badge** in your README, from the [press kit](https://recomplauncher.com/press).
+- **A short "How to play" at the top of the README**: what copy of the game you need, and where to put it.
+
 ## Get listed
 
-Recomps on recomplauncher.com are in the launcher. If yours isn't there yet, submit it from the
-website (Submit a Game) with its GitHub repo. Already listed and adding `recomplauncher.json`?
-Nothing to do: the next release you publish carries it.
+Recomps on recomplauncher.com are in the launcher. If yours isn't there yet, [submit it](https://recomplauncher.com/submit?platform=pc)
+with its GitHub repo, and say which parts it supports. A free [developer account](https://recomplauncher.com/developers?signup=1)
+gets it reviewed faster. Already listed and adding `recomplauncher.json`? Nothing to do: the next
+release you publish carries it.
 
 ## Checking your file
 
@@ -697,6 +1045,8 @@ The launcher has tools for this. In Settings, open Developers and turn on Develo
    and the choice each setting shows right now. Problems are marked in red, things worth a look in
    yellow. JSON mistakes show the line and column. It also sums up how the game is set up
    (launches with the player's copy, or needs a one-time step) and what it can do.
+   It also flags, in yellow, a step that builds from the player's copy without `prepare.done`, and
+   paths your game writes to outside `{install}` and `{data}`. Those never stop your game.
    No file yet? "Make a starter file" writes one next to your program to begin from.
 3. **Try it like a player.** Set it up with your own disc, change a setting, then open your
    settings file: only the keys you listed should have changed. Press Play: your game should start
@@ -705,7 +1055,13 @@ The launcher has tools for this. In Settings, open Developers and turn on Develo
 
 Add `"name"` to your file and the local build goes by that name.
 
-If you'd rather check a release the way players get it, install it from Discover and open its
+If you'd rather check a release the way players get it, install it from the Catalog and open its
 page. A file the launcher can't read is skipped, and the built-in one (if any) is used instead.
 
 Stuck, or want us to write the file with you? Open an issue, or send us your file.
+
+## Achievements
+
+Recomp Achievements is RecompLauncher's achievement system: achievements pop up as players earn them, whole games can be Mastered, and Ranked points go on the leaderboards. It's separate from `recomplauncher.json`: a small C library in your recomp reports unlocks to the launcher, using the game's own achievements (Xbox 360), rules on console memory, or events you fire from your code.
+
+Everything you need is in the [Recomp Achievements repository](https://github.com/elripalda/RecompAchievements). Xbox 360 recomps on a recent ReXGlue build may already work without any change.

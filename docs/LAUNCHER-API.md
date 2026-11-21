@@ -29,7 +29,7 @@ was signed out (from the account page, or the account is gone): the launcher for
 | `POST ?a=save-delete` | `{"game", "v"}` |
 | `POST ?a=signout` | This PC's token stops working |
 
-The website keeps the newest five copies per game and 150 MB per account, refuses game files,
+The website keeps the newest five copies per game and 300 MB per account, refuses game files,
 programs and archives inside a copy, and doesn't keep a copy whose `hash` matches the newest one.
 
 `hash` is the checksum of the whole set of save files (see `saves::set_hash`), so two PCs with the
@@ -45,6 +45,57 @@ same saves have the same hash. The launcher remembers the hash it last agreed on
 With the website's sign-in cookie: `GET ?a=pcs`, `POST ?a=pc-remove {id}`, `GET ?a=cloud`,
 `GET ?a=cloud-get&game=&v=`, `POST ?a=cloud-delete {game, v}`. Deleting the account deletes its
 PCs and cloud saves too.
+
+## Playtime
+
+Signed in, each PC sends its own running total per game (seconds played on that PC, ever), and the
+website adds the PCs up. Because a PC always sends its total and never "since last time", a resend
+or a lost request never counts anything twice.
+
+| Call | |
+| --- | --- |
+| `POST ?a=play` | `{"pc", "games": [{"game", "secs", "last", "count", "longest", "recent"}]}`, up to 500 and 1 MB → `{"ok": true}`. The website keeps the larger of what it has and what's sent, so nothing goes down. Bad entries (`secs` over 20 years, `last` more than a day ahead, a malformed id) are skipped, not the whole request. |
+| `GET ?a=play` | `{"games": {ID: {"secs", "last", "count", "longest", "recent"}}, "titles": {TITLE: {"secs", "last"}}}`, summed over the account's PCs |
+
+`count`, `longest` and `recent` draw a game's "Your play time" card (this week, this month,
+sessions, longest, the last two weeks) over all the PCs:
+
+- `count` is how many sessions that PC kept of the game (10 seconds or more each, its newest 500)
+  and `longest` the longest of them in seconds. Like `secs`, the website keeps the larger of what
+  it has and what's sent per PC; `GET` gives `count` summed over the PCs and `longest` the largest.
+- `recent` is that PC's sessions of the last 31 days, as `[start, secs]` (start in Unix seconds,
+  both whole numbers above zero), oldest first. The website adds them to what it had for that PC
+  (a session is the same one when both numbers match, so a resend adds nothing), drops sessions
+  older than 31 days, and skips a bad one (start more than a day ahead, longer than 20 years) on
+  its own. `GET` gives every PC's recent sessions together, oldest first.
+- A site without them leaves the card to the PC's own sessions. Titles don't carry them.
+
+`pc` is the PC's play ID: 32 lowercase hex characters, random, kept in `play.id` in the
+launcher's data folder (`cloud::play_id`). It's the same each time that PC signs in, which the
+sign-in token isn't, so the website keeps play rows by account and play ID rather than by sign-in:
+signing out and back in then adds to the same rows instead of counting that PC's whole time a
+second time. When a send has a good `pc`, the rows that sign-in sent before under itself move to
+that play ID, merged as above (the larger of each number, recent sessions joined). A send without
+one (an older launcher) is kept by its sign-in as before. It's used for nothing but play time, and
+isn't the usage ID (`install.id`), which only goes when the player shares usage and Settings can
+reset. Rows from a sign-in that's already gone stay as they are.
+
+- `game` is the recomp's id, or `recomp--game` for one game of a recomp that carries several.
+  A developer's own builds (`local-…`, `own-…`) aren't sent.
+- A title is the sum of its recomps in the catalog's `titles[].pc`, and a replaced listing counts
+  as its new id. `recomp--game` rows don't count toward titles until the catalog maps those games.
+- The launcher sends everything after signing in and then once a day (installed games and what
+  it kept from uninstalled ones), one game after each session, and reads the totals with the
+  account and every 10 minutes (`cloud::playtime_push`, `playtime_pull`; `playSync` in app.js).
+- 120 sends and 120 reads an hour per PC. Any failure, a 401 included, just leaves this PC's own
+  numbers showing: these calls never sign the PC out, and they rest on their own in net.rs.
+- `save-put`'s `played` only labels save copies (the "Which save do you want?" picker) and isn't
+  counted.
+- `tools/fake-play-site.cjs` stands in for the website to try this locally (`RL_API`).
+
+Account page (cookie): `GET ?a=playtime` (each game's total and each PC's share), `POST
+?a=playtime-clear {game?}` (one game, or everything). Removing a PC keeps its rows; deleting the
+account deletes them. Each play ID's share is one PC, named after the sign-in that last sent it.
 
 ## Get it on my PC
 

@@ -16,7 +16,7 @@ fn word(key: &str) -> String {
 }
 
 /// Quit from inside the window (Big Picture's way out on Home), the same as the tray's Quit: it
-/// closes even with Run in background on.
+/// closes even with Close to tray on.
 #[tauri::command]
 pub fn quit_launcher(app: AppHandle) {
     app.exit(0);
@@ -53,7 +53,7 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         }
     }
     m.append(&PredefinedMenuItem::separator(app)?)?;
-    for (id, key) in [("go:library", "Library"), ("go:discover", "Discover"), ("go:shots", "Screenshots"), ("go:settings", "Settings")] {
+    for (id, key) in [("go:library", "Library"), ("go:discover", "Catalog"), ("go:shots", "Screenshots"), ("go:settings", "Settings")] {
         m.append(&MenuItem::with_id(app, id, word(key), true, None::<&str>)?)?;
     }
     m.append(&MenuItem::with_id(app, "bp", word("Big Picture mode"), true, None::<&str>)?)?;

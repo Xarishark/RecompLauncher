@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use tauri::State;
 
 const FILE: &str = "recomplauncher.json";
-const TOP_KEYS: &[&str] = &["$schema", "format", "name", "repo", "game", "start", "config", "folders", "exit_codes", "settings", "groups", "actions", "prepare", "looks", "mods", "saves", "inputs", "requires", "min", "games"];
+const TOP_KEYS: &[&str] = &["$schema", "format", "name", "repo", "game", "start", "config", "folders", "exit_codes", "settings", "groups", "actions", "prepare", "looks", "mods", "saves", "inputs", "requires", "min", "games", "system"];
 
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -63,7 +63,7 @@ fn read_raw(dir: &Path) -> Option<Value> {
 /// The program Play starts: the file's own `start.program`, or the likeliest one in the folder.
 fn program_in(dir: &Path, p: Option<&profile::Profile>, name: &str) -> Option<PathBuf> {
     if let Some(start) = p.and_then(|p| p.start.as_ref()) {
-        if let Some(found) = start.program.iter().map(|x| PathBuf::from(profile::fill(x, dir, None))).find(|x| dir.join(x).is_file()) {
+        if let Some(found) = start.program.iter().map(|x| PathBuf::from(profile::fill(x, dir, None))).find(|x| profile::named_program(dir.join(x)).is_some()) {
             return Some(found);
         }
     }
@@ -83,12 +83,74 @@ pub fn dev_add(st: State<'_, App>, path: String) -> Res<Installed> {
 #[tauri::command(async)]
 pub fn add_any(st: State<'_, App>, path: String) -> Res<Installed> {
     let p = PathBuf::from(&path);
+    #[cfg(target_os = "linux")]
+    if p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("appimage")) {
+        return add_appimage(&st, &p);
+    }
     if p.is_file() {
         let dir = p.parent().map(Path::to_path_buf).ok_or_else(|| Error::Msg("That file has no folder.".into()))?;
         let rel = p.file_name().map(PathBuf::from);
         return add_folder(&st, dir.to_string_lossy().to_string(), rel, "own");
     }
     add_folder(&st, path, None, "own")
+}
+
+/// The player's own AppImage, on Linux: unpacked into the Recomp Library (see plain::bring_in) as
+/// a game of its own, or as the newer version of one brought in the same way before (the launcher
+/// doesn't update games it doesn't know, so this is how they update). Not added when it won't unpack.
+#[cfg(target_os = "linux")]
+fn add_appimage(st: &App, image: &Path) -> Res<Installed> {
+    let key = crate::plain::image_key(image);
+    let earlier = st.lib.lock().unwrap().installed.values().find(|g| g.local && !key.is_empty() && g.from_appimage == key).map(|g| g.id.clone());
+    let id = match &earlier {
+        Some(id) => id.clone(),
+        None => add_image_record(st, image)?,
+    };
+    match crate::plain::bring_in(st, &id, image) {
+        Ok(b) => crate::plain::tell(&b),
+        Err(e) => {
+            if earlier.is_none() {
+                st.lib.lock().unwrap().forget(&id);
+                st.save();
+            }
+            return Err(e);
+        }
+    }
+    st.lib.lock().unwrap().installed.get(&id).cloned().ok_or_else(|| Error::Msg("It isn't installed.".into()))
+}
+
+/// A new game of the player's own for their AppImage, before it's unpacked: named by its embedded
+/// recomplauncher.json, else by the AppImage's own name. Never another game the player added from
+/// the same folder (Downloads holds many).
+#[cfg(target_os = "linux")]
+fn add_image_record(st: &App, image: &Path) -> Res<String> {
+    let dir = image.parent().map(Path::to_path_buf).ok_or_else(|| Error::Msg("That file has no folder.".into()))?;
+    let raw: Option<Value> = crate::appimage::manifest(image).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let said = |k: &str| raw.as_ref().and_then(|v| v.get(k)).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let name = said("name").unwrap_or_else(|| crate::plain::image_title(image));
+    let mut l = st.lib.lock().unwrap();
+    let base = format!("own-{}", slug(&name));
+    let mut id = base.clone();
+    let mut n = 2;
+    while l.installed.contains_key(&id) {
+        id = format!("{base}-{n}");
+        n += 1;
+    }
+    let g = Installed {
+        id: id.clone(),
+        name,
+        game: said("game").unwrap_or_default(),
+        repo: said("repo").unwrap_or_default(),
+        tag: "own".into(),
+        path: dir,
+        exe: image.file_name().map(PathBuf::from),
+        installed_at: now(),
+        updated_at: now(),
+        local: true,
+        ..Default::default()
+    };
+    l.put(&id, g);
+    Ok(id)
 }
 
 /// `tag`: "local" for a developer's build, "own" for a game the player added themselves.
@@ -162,9 +224,6 @@ pub struct Report {
     /// What the setup can do besides: "settings", "verify" (known dumps), "inputs" (more than one
     /// file), "saves" (says where it saves).
     caps: Vec<&'static str>,
-    /// Who looks after this setup, as the catalog says: "project", "launcher", "community", or
-    /// "unconfirmed" when nobody has said.
-    owner: &'static str,
     items: Vec<Item>,
 }
 
@@ -187,16 +246,6 @@ fn summary(p: &profile::Profile) -> (&'static str, Vec<&'static str>) {
     (flow, caps)
 }
 
-/// Who maintains a game's setup, from the catalog's "maintained_by". Only the catalog says it, so
-/// where a profile came from never counts as a promise from the project.
-pub fn owner(entry: &Value) -> &'static str {
-    match entry.get("maintained_by").and_then(Value::as_str).unwrap_or("") {
-        "project" | "official" => "project",
-        "launcher" => "launcher",
-        "community" => "community",
-        _ => "unconfirmed",
-    }
-}
 
 fn ok(text: impl Into<String>) -> Item {
     Item { level: "ok", text: text.into(), detail: String::new() }
@@ -290,7 +339,25 @@ pub fn dev_check(st: State<'_, App>, id: String) -> Res<Report> {
     }
     let location = embedded.map(|p| p.location).unwrap_or_else(|| file.display().to_string());
     let (flow, caps) = prof.as_ref().filter(|p| p.format == 1).or(used.as_ref()).map(summary).unwrap_or(("", vec![]));
-    Ok(Report { source, file: location, has_file, error, level, flow, caps, owner: owner(&entry), items })
+    Ok(Report { source, file: location, has_file, error, level, flow, caps, items })
+}
+
+/// What "game.check" lets the launcher do with the player's copy.
+fn check_item(c: &profile::Check) -> Item {
+    if c.file.is_empty() && c.xdvdfs.is_empty() && c.iso9660.is_empty() && c.nup_build_id.is_empty() {
+        return warn("No \"game.check\"", "Any disc or folder is accepted, and the launcher can't find the player's copy in their folders.");
+    }
+    // Every PlayStation game folder has these, so without title IDs the folder is found only by
+    // its title, and that often has an edition or subtitle the game's name doesn't.
+    let file_name = c.file.rsplit(['/', '\\']).next().unwrap_or("");
+    let shared = file_name.eq_ignore_ascii_case("eboot.bin") || file_name.eq_ignore_ascii_case("param.sfo");
+    if shared && c.ids.is_empty() {
+        return warn(
+            "\"game.check\" lists no title IDs",
+            format!("Every PlayStation game has {file_name}, so the launcher finds the player's folder only by its title, which can have an edition or subtitle your game's name doesn't. Add \"ids\" with each region's title ID, like [\"CUSA00242\"]."),
+        );
+    }
+    ok("Checks the player's copy and finds it in their folders")
 }
 
 /// The checks, top to bottom in the order of the developer guide. Gives back the level reached.
@@ -306,7 +373,7 @@ fn check_profile(p: &profile::Profile, dir: &Path, g: &Installed, items: &mut Ve
     match p.start.as_ref() {
         None => items.push(warn("No \"start\"", "Play starts the program the launcher found, with no arguments of yours.")),
         Some(s) if s.program.is_empty() => items.push(err("\"start.program\" is empty", "List the path of your program, from the top of your release.")),
-        Some(s) => match s.program.iter().find(|x| dir.join(profile::fill(x, dir, None)).is_file()) {
+        Some(s) => match s.program.iter().find(|x| profile::named_program(dir.join(profile::fill(x, dir, None))).is_some()) {
             Some(x) => {
                 items.push(ok(format!("Play starts {x}{}", if s.args.is_empty() { String::new() } else { format!(" {}", s.args.join(" ")) })));
                 level = 1;
@@ -331,12 +398,7 @@ fn check_profile(p: &profile::Profile, dir: &Path, g: &Installed, items: &mut Ve
         } else {
             items.push(ok(format!("Asks for: {}", gc.label)));
         }
-        let c = &gc.check;
-        if c.file.is_empty() && c.xdvdfs.is_empty() && c.iso9660.is_empty() && c.nup_build_id.is_empty() {
-            items.push(warn("No \"game.check\"", "Any disc or folder is accepted, and the launcher can't find the player's copy in their folders."));
-        } else {
-            items.push(ok("Checks the player's copy and finds it in their folders"));
-        }
+        items.push(check_item(&gc.check));
         for d in &gc.dumps {
             if d.size == 0 || d.crc32.trim().is_empty() {
                 items.push(warn(format!("The \"{}\" dump needs both \"size\" and \"crc32\"", d.name), "Take them from Redump."));
@@ -468,8 +530,90 @@ fn check_profile(p: &profile::Profile, dir: &Path, g: &Installed, items: &mut Ve
         }
         items.extend(option_items(&pr.options));
         items.extend(version_item(&pr.version));
+        items.extend(done_item(p));
+        let bad: Vec<&str> = pr.env.keys().filter(|k| !profile::env_name_ok(k)).map(String::as_str).collect();
+        if !bad.is_empty() {
+            items.push(warn(format!("Left out of \"prepare.env\": {}", bad.join(", ")),
+                "Names are letters, digits and _. The launcher's own RECOMPLAUNCHER_ ones and system ones like PATH and TEMP can't be set: the step gets a temp folder of its own."));
+        }
+        items.extend(keeps_copy_items(p, dir));
     }
+    items.extend(system_item(p));
+    items.extend(outside_item(p));
     level
+}
+
+/// `system`: values the launcher can't read as a version, or a graphics API it doesn't know. Those
+/// are ignored, so the PC is never checked against them.
+fn system_item(p: &profile::Profile) -> Option<Item> {
+    let bad = crate::sysneeds::bad_values(p.system.as_ref()?);
+    if bad.is_empty() {
+        return None;
+    }
+    Some(warn(
+        format!("Not read in \"system\": {}", bad.join(", ")),
+        format!("Versions are numbers with dots (\"10\", \"2.35\", \"1.3\"), and graphics APIs are {}. Linux builds give glibc, not a version.", crate::sysneeds::GRAPHICS.join(", ")),
+    ))
+}
+
+/// A step that builds the game from the player's copy, without `prepare.done`: the launcher can't
+/// tell the build is there, so it can't keep the game set up after an update, or use a build the
+/// player already has. Only then: a step that only fetches extras needs no list. A keeps_copy
+/// step gets its own, more exact warning from keeps_copy_items.
+fn done_item(p: &profile::Profile) -> Option<Item> {
+    let pr = p.prepare.as_ref()?;
+    let from_copy = p.game.is_some() || !p.inputs.is_empty();
+    if !from_copy || !pr.done.is_empty() || pr.keeps_copy {
+        return None;
+    }
+    Some(warn(
+        "No \"prepare.done\"",
+        "List a file your step always leaves, like \"{data}/build/game.pak\": the launcher then knows the game is built, keeps it set up after an update, and can use a build the player already has.",
+    ))
+}
+
+/// The places outside the game's folder a profile has the game write to (saves, settings, builds,
+/// the folders it passes). Not wrong, but everything in `{install}` or `{data}` moves, backs up and
+/// uninstalls with the game, and nothing is left behind.
+fn outside_item(p: &profile::Profile) -> Option<Item> {
+    const OUTSIDE: [&str; 5] = ["{home}", "{local}", "{config}", "{documents}", "{appdata}"];
+    let mut written: Vec<&str> = p.saves.iter().map(String::as_str).collect();
+    written.extend(p.config.iter().flat_map(|c| c.file.iter().map(|f| f.path.as_str())));
+    written.extend(p.folders.values().flatten().map(|f| f.path.as_str()));
+    if let Some(s) = p.start.as_ref() {
+        written.extend(s.args.iter().chain(s.env.values()).map(String::as_str));
+    }
+    if let Some(pr) = p.prepare.as_ref() {
+        written.extend(pr.args.iter().chain(pr.env.values()).chain(pr.done.iter()).map(String::as_str));
+    }
+    let mut outside: Vec<&str> = written.into_iter().filter(|w| OUTSIDE.iter().any(|o| w.contains(o))).collect();
+    outside.sort();
+    outside.dedup();
+    if outside.is_empty() {
+        return None;
+    }
+    Some(warn(
+        format!("Writes outside {{install}} and {{data}}: {}", outside.join(", ")),
+        "Keep saves, settings, caches and builds in {data} (or {install}): they then move, back up and uninstall with the game. Players' saves already elsewhere are fine to keep reading.",
+    ))
+}
+
+/// prepare.keeps_copy: run again without the copy, leaving out the arguments with {game} in them.
+/// Only what would make that run go wrong, or never happen, is said; nothing stops the game.
+fn keeps_copy_items(p: &profile::Profile, dir: &Path) -> Vec<Item> {
+    let Some(pr) = p.prepare.as_ref().filter(|pr| pr.keeps_copy) else { return vec![] };
+    let mut out = vec![];
+    // "--game", "{game}": leaving out "{game}" alone would hand --game the next argument.
+    if pr.args.iter().any(|a| a == "{game}") {
+        out.push(warn("\"{game}\" is an argument of its own in \"prepare.args\"", "With keeps_copy, the launcher leaves out every argument with {game} in it when it builds again without the copy. Write the copy as one argument, like \"--game={game}\"."));
+    }
+    if p.build_home(dir).is_none() {
+        out.push(warn("\"prepare.keeps_copy\" has no build folder to look in", "List the folder your step keeps the copy's files in as the first \"folders.game\" (not the game's own folder). Without it, players are asked for their copy again."));
+    }
+    if pr.done.is_empty() {
+        out.push(warn("\"prepare.keeps_copy\" without \"prepare.done\"", "List the files a finished build has, so the launcher can tell when it has to build again."));
+    }
+    out
 }
 
 /// prepare.version: changing it is how a json asks players who set up already to run it again.
@@ -521,8 +665,9 @@ fn option_items(opts: &[profile::PrepareOption]) -> Vec<Item> {
         }
         if bad.is_empty() {
             let when = [(!o.os.is_empty()).then(|| o.os.join(", ")), (!o.gpu.is_empty()).then(|| format!("{} cards", o.gpu))].into_iter().flatten().collect::<Vec<_>>().join(", ");
-            let lic = if o.license.is_some() { ", starts off: the player accepts its license" } else { ", starts on" };
-            items.push(ok(format!("Setup option: {name}{}{lic}", if when.is_empty() { String::new() } else { format!(" (only on {when})") })));
+            let lic = if o.license.is_some() { ", starts off: the player accepts its license" } else if o.start_on == Some(false) { ", starts off" } else { ", starts on" };
+            let req = if o.required { ", required: setup waits until it's ticked" } else { "" };
+            items.push(ok(format!("Setup option: {name}{}{lic}{req}", if when.is_empty() { String::new() } else { format!(" (only on {when})") })));
         } else {
             items.push(err(format!("Setup option \"{name}\": {}", bad.join("; ")), "See prepare.options in the developer guide."));
         }
@@ -564,6 +709,24 @@ pub fn is_local(st: &App, id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn keeps_copy_says_what_would_stop_a_build_without_the_copy() {
+        let p: crate::profile::Profile = serde_json::from_value(serde_json::json!({
+            "prepare": { "program": ["Builder.exe"], "args": ["--game", "{game}"], "keeps_copy": true },
+            "start": { "program": ["Builder.exe"] }
+        })).unwrap();
+        let items = super::keeps_copy_items(&p, &std::env::temp_dir().join("x"));
+        let said: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(items.len(), 3, "{said:?}");
+        assert!(items.iter().all(|i| i.level == "warn"));
+        let fine: crate::profile::Profile = serde_json::from_value(serde_json::json!({
+            "prepare": { "program": ["Builder.exe"], "args": ["--game={game}"], "done": ["{install}/Game/game"], "keeps_copy": true },
+            "start": { "program": ["Builder.exe"] },
+            "folders": { "game": [{ "path": "{install}/Game" }] }
+        })).unwrap();
+        assert!(super::keeps_copy_items(&fine, &std::env::temp_dir().join("x")).is_empty());
+    }
+
+    #[test]
     fn setup_options_are_checked_in_plain_words() {
         let p: crate::profile::Prepare = serde_json::from_str(r#"{"program":["Builder.exe"],"options":[
             {"id":"dlss","label":"Upscaler A","args":["--a"],"gpu":"nvidia","license":{"name":"A license","url":"https://example.com/a"}},
@@ -577,6 +740,94 @@ mod tests {
             assert!(bad.contains(w), "{w}: {bad}");
         }
         assert!(items[2].text.contains("already has the id"));
+    }
+
+    #[test]
+    fn a_required_setup_option_is_named_as_required() {
+        let p: crate::profile::Prepare = serde_json::from_str(r#"{"program":["Builder.exe"],"options":[
+            {"id":"vs","label":"Build tools","args":["--vs"],"required":true,"license":{"name":"VS","url":"https://example.com/vs"}}]}"#).unwrap();
+        let items = super::option_items(&p.options);
+        assert!(items[0].text.contains("starts off") && items[0].text.contains("required"), "{}", items[0].text);
+    }
+
+    fn profile(json: &str) -> crate::profile::Profile {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn a_step_building_from_the_copy_without_done_is_warned() {
+        let p = profile(r#"{"format":1,"game":{"kind":"iso"},"prepare":{"program":["Builder.exe"],"args":["{game}"]}}"#);
+        let item = super::done_item(&p).unwrap();
+        assert_eq!(item.level, "warn");
+        assert!(item.text.contains("prepare.done"), "{}", item.text);
+    }
+
+    #[test]
+    fn a_step_with_done_or_without_a_copy_is_left_alone() {
+        let with_done = profile(r#"{"format":1,"game":{"kind":"iso"},"prepare":{"program":["Builder.exe"],"done":["{data}/build/game.pak"]}}"#);
+        assert!(super::done_item(&with_done).is_none());
+        let extras_only = profile(r#"{"format":1,"prepare":{"program":["Fetcher.exe"]}}"#);
+        assert!(super::done_item(&extras_only).is_none());
+        let no_step = profile(r#"{"format":1,"game":{"kind":"iso"}}"#);
+        assert!(super::done_item(&no_step).is_none());
+    }
+
+    #[test]
+    fn writing_outside_the_game_folder_is_named() {
+        let p = profile(r#"{"format":1,"saves":["{local}/Game/saves","{data}/saves"],
+            "prepare":{"program":["Builder.exe"],"args":["--out","{home}/Games/Game"],"env":{"CACHE":"{data}/cache"}}}"#);
+        let item = super::outside_item(&p).unwrap();
+        assert_eq!(item.level, "warn");
+        assert!(item.text.contains("{local}/Game/saves") && item.text.contains("{home}/Games/Game"), "{}", item.text);
+        assert!(!item.text.contains("{data}/"), "{}", item.text);
+    }
+
+    #[test]
+    fn writing_only_in_install_and_data_is_fine() {
+        let p = profile(r#"{"format":1,"saves":["{data}/saves","{install}/settings.toml"],"start":{"program":["g.exe"],"args":["--data","{data}"]}}"#);
+        assert!(super::outside_item(&p).is_none());
+    }
+
+    #[test]
+    fn a_system_value_the_launcher_cant_read_is_named() {
+        let p: crate::profile::Profile = serde_json::from_str(r#"{"format":1,"system":{"linux":{"glibc":"latest","graphics":{"vulkan":"1.3"}}}}"#).unwrap();
+        let item = super::system_item(&p).unwrap();
+        assert_eq!(item.level, "warn");
+        assert!(item.text.contains("system.linux.glibc"), "{}", item.text);
+    }
+
+    #[test]
+    fn a_system_part_that_reads_well_is_left_alone() {
+        let p: crate::profile::Profile = serde_json::from_str(r#"{"format":1,"system":{"windows":{"version":"10","graphics":{"d3d12":"12_0"}},"linux":{"glibc":"2.35"}}}"#).unwrap();
+        assert!(super::system_item(&p).is_none());
+        let none: crate::profile::Profile = serde_json::from_str(r#"{"format":1}"#).unwrap();
+        assert!(super::system_item(&none).is_none());
+    }
+
+    #[test]
+    fn a_playstation_check_without_title_ids_is_warned() {
+        let c = crate::profile::Check { file: "eboot.bin".into(), ..Default::default() };
+        let item = super::check_item(&c);
+        assert_eq!(item.level, "warn");
+        assert!(item.text.contains("no title IDs"), "{}", item.text);
+    }
+
+    #[test]
+    fn a_ps3_check_by_its_usrdir_eboot_without_title_ids_is_warned() {
+        let c = crate::profile::Check { file: "USRDIR/EBOOT.BIN".into(), ..Default::default() };
+        assert!(super::check_item(&c).detail.contains("EBOOT.BIN"));
+    }
+
+    #[test]
+    fn a_playstation_check_with_title_ids_is_fine() {
+        let c = crate::profile::Check { file: "eboot.bin".into(), ids: vec!["CUSA00242".into()], ..Default::default() };
+        assert_eq!(super::check_item(&c).level, "ok");
+    }
+
+    #[test]
+    fn a_check_by_a_games_own_file_needs_no_ids() {
+        let c = crate::profile::Check { file: "data/sanctuary.pak".into(), ..Default::default() };
+        assert_eq!(super::check_item(&c).level, "ok");
     }
 
     #[test]
@@ -675,13 +926,5 @@ mod tests {
             assert!(!INTERNAL.contains(&name), "{name} is on the internal list but a developer can write it");
             assert!(props.contains_key(&shown), "Profile.{name} isn't in docs/recomplauncher.schema.json");
         }
-    }
-
-    #[test]
-    fn owner_comes_only_from_the_catalog() {
-        assert_eq!(owner(&serde_json::json!({"maintained_by": "project"})), "project");
-        assert_eq!(owner(&serde_json::json!({"maintained_by": "community"})), "community");
-        assert_eq!(owner(&serde_json::json!({"launcher": {}})), "unconfirmed");
-        assert_eq!(owner(&Value::Null), "unconfirmed");
     }
 }
