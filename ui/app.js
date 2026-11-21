@@ -8056,35 +8056,62 @@ async function loadShots(id) {
   if (S.view === 'game' && S.arg === id) refreshGame();
 }
 
-// The ROM Manager's Look again: a refresh icon that turns into a spinning circle while it looks.
-// It can't know how many files there are in all, so the circle says it's busy rather than how far;
-// the count so far is in its tooltip and said to screen readers.
+// The ROM Manager's Look again: a refresh icon that turns into a circle while it looks. The scan
+// first counts the files it will look at, then the circle fills with the share looked at so far
+// (it spins while that count isn't in yet). The count is in its tooltip and said to screen readers.
 const ROM_SPIN_MS = 900;
-const romScanSaid = () => tf('Looking through your folders… {seen} files looked at, {found} copies found', { seen: S.romScan.seen, found: S.romScan.found });
+const ROM_RING = 2 * Math.PI * 8.5;
+// How full the circle is: kept just short of full until the scan has really ended, as the count is
+// close rather than exact and sorting what was found takes a moment after the last file.
+const romScanShare = () => (S.romScan && S.romScan.total ? Math.min(S.romScan.seen / S.romScan.total, 0.97) : 0);
+const romScanFills = () => !!(S.romScan && S.romScan.total > 0);
+function romScanSaid() {
+  const s = S.romScan;
+  if (!romScanFills()) return tf('Looking through your folders… {seen} files looked at, {found} copies found', { seen: s.seen, found: s.found });
+  return tf('Looking through your folders… {pct}%, {found} copies found', { pct: Math.round(romScanShare() * 100), found: s.found });
+}
+const romRingOffset = (share) => (ROM_RING * (1 - share)).toFixed(2);
 function romRefreshBtn() {
   const busy = !!S.romScan;
+  const fills = romScanFills();
   const tip = busy ? romScanSaid() : t('Look through your folders again');
   // A page drawn again while it looks keeps the circle where it was, rather than starting it over.
-  const at = busy ? `style="animation-delay:-${(Date.now() - S.romScan.at) % ROM_SPIN_MS}ms"` : '';
+  const spinAt = busy ? `style="animation-delay:-${(Date.now() - S.romScan.at) % ROM_SPIN_MS}ms"` : '';
+  const arcStyle = fills ? `style="stroke-dashoffset:${romRingOffset(romScanShare())}"` : spinAt;
   const icon = '<svg class="ri" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.6-4.5L4 8"/><path d="M4 3.5V8h4.5"/><path d="M4 13a8 8 0 0 0 14.6 4.5L20 16"/><path d="M20 20.5V16h-4.5"/></svg>';
-  const spin = `<svg class="rs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle class="trk" cx="12" cy="12" r="8.5"/><circle class="arc" cx="12" cy="12" r="8.5" ${at}/></svg>`;
+  const spin = `<svg class="rs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle class="trk" cx="12" cy="12" r="8.5"/><circle class="arc" cx="12" cy="12" r="8.5" ${arcStyle}/></svg>`;
   const said = busy ? `<span class="rm-said" id="rm-scan-said" role="status">${esc(romScanSaid())}</span>` : '';
-  return `<button type="button" class="btn sm rm-refresh${busy ? ' busy' : ''}" data-act="rom-scan" title="${esc(tip)}" aria-label="${esc(t('Look again'))}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon}${spin}${said}</button>`;
+  const cls = `btn sm rm-refresh${busy ? ' busy' : ''}${fills ? ' fill' : ''}`;
+  return `<button type="button" class="${cls}" data-act="rom-scan" title="${esc(tip)}" aria-label="${esc(t('Look again'))}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon}${spin}${said}</button>`;
 }
-// Only the count changes while it looks: the tooltip and what's said, not the whole page.
+// The circle on the page, filled to this share; the stroke's own transition makes each step glide.
+function romRingTo(share) {
+  const btn = document.querySelector('.rm-refresh');
+  const arc = btn && btn.querySelector('.arc');
+  if (!arc) return;
+  btn.classList.add('fill');
+  arc.style.animationDelay = '';
+  arc.style.strokeDashoffset = romRingOffset(share);
+}
+// Only the circle and the count change while it looks, not the whole page.
 T.event.listen('rom-scan', ({ payload: p }) => {
   if (!S.romScan) return;
-  Object.assign(S.romScan, { seen: Number(p.seen) || 0, found: Number(p.found) || 0 });
+  Object.assign(S.romScan, { seen: Number(p.seen) || 0, found: Number(p.found) || 0, total: Number(p.total) || 0 });
+  if (romScanFills()) romRingTo(romScanShare());
   const btn = document.querySelector('.rm-refresh');
   const said = document.getElementById('rm-scan-said');
   if (btn) btn.title = romScanSaid();
   if (said) said.textContent = romScanSaid();
 });
-// The circle turns back into the icon before the page is drawn with what was found, so it fades
-// rather than jumps.
+// Once it's done: the circle fills the rest of the way, then turns back into the icon, before the
+// page is drawn with what was found, so it glides rather than jumps.
 async function romRefreshSettle() {
   const btn = document.querySelector('.rm-refresh.busy');
   if (!btn) return;
+  if (btn.classList.contains('fill')) {
+    romRingTo(1);
+    await new Promise((r) => setTimeout(r, 420));
+  }
   btn.classList.remove('busy');
   await new Promise((r) => setTimeout(r, 280));
 }

@@ -641,6 +641,9 @@ button.prog.su-prog:focus-visible,.prog.su-prog:focus-visible{outline:2px solid 
 .rm-refresh .trk{opacity:.18}
 .rm-refresh .arc{stroke-dasharray:16 38;transform-box:view-box;transform-origin:12px 12px;animation:rm-spin .9s linear infinite}
 @keyframes rm-spin{to{transform:rotate(360deg)}}
+/* Once the scan knows how many files there are: the circle stops spinning and fills from the top, each step gliding. */
+.rm-refresh.fill .trk{opacity:.22}
+.rm-refresh.fill .arc{animation:none;stroke:var(--cyan);stroke-dasharray:53.41;transform:rotate(-90deg);transition:stroke-dashoffset .4s cubic-bezier(.3,.6,.3,1)}
 @media (prefers-reduced-motion:reduce){.rm-refresh .arc{animation-duration:2.4s}.rm-refresh svg{transition:opacity .2s ease}}
 /* The running count, for screen readers: the circle shows the same to everyone else. */
 .rm-said{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
